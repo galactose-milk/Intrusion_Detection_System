@@ -1,0 +1,245 @@
+/* frontend/src/App.css */
+
+/* Keep body styles minimal here, more global ones in index.css */
+body {
+    background-color: #f4f7f6; /* Light background for the overall page outside the app structure if needed */
+    color: #333; /* Default text color for light mode */
+}
+
+.App {
+  display: flex;
+  height: 100vh; /* Full viewport height */
+  background-color: #f4f7f6; /* Light background */
+  color: #333; /* Ensure text is readable */
+}
+
+/* SidePanel Styling */
+.side-panel {
+  width: 220px; /* Fixed width for side panel */
+  background-color: #2c3e50; /* Dark blue/grey */
+  color: #ecf0f1; /* Light text */
+  padding: 20px 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0; /* Prevent shrinking */
+}
+
+.side-panel h2 {
+  text-align: center;
+  margin-bottom: 30px;
+  font-size: 1.5em;
+  color: #e0f2fe; /* Lighter blue for heading */
+}
+
+.side-panel nav ul {
+  list-style: none;
+}
+
+.side-panel nav li {
+  padding: 15px 20px;
+  cursor: pointer;
+  border-left: 4px solid transparent; /* Indicator for active item */
+  transition: background-color 0.2s ease, border-left 0.2s ease;
+}
+
+.side-panel nav li:hover {
+  background-color: #34495e; /* Slightly lighter dark blue */
+}
+
+.side-panel nav li.active {
+  background-color: #1abc9c; /* Teal color for active item */
+  border-left: 4px solid #f1c40f; /* Yellow indicator */
+  font-weight: bold;
+  color: #2c3e50; /* Dark text on active */
+}
+
+
+/* MainScreen Styling */
+.main-screen {
+  flex-grow: 1; /* Takes remaining space */
+  padding: 30px;
+  overflow-y: auto; /* Allow scrolling if content overflows */
+  height: 100%;
+  background-color: #ffffff; /* White background for content */
+}
+
+.main-screen h2 {
+  margin-bottom: 20px;
+  color: #34495e;
+  border-bottom: 2px solid #eee;
+  padding-bottom: 10px;
+}
+
+/* Generic View Styling */
+.view-container {
+  background-color: #fff;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+  color: #333; /* Ensure text inside views is dark */
+}
+.view-container h2 {
+    color: #34495e; /* Ensure headings inside views are correct color */
+}
+.view-container p {
+    color: #555; /* Default paragraph color */
+    margin-bottom: 1em;
+}
+
+
+/* Form Styling (Example for SetupView) */
+.form-group {
+  margin-bottom: 15px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 5px;
+  font-weight: bold;
+  color: #555;
+}
+
+.form-group input[type="text"],
+.form-group input[type="url"],
+.form-group select,
+.form-group textarea {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 1em;
+  background-color: #fff; /* Ensure form fields are white */
+  color: #333; /* Ensure text input is dark */
+}
+.form-group input::placeholder,
+.form-group textarea::placeholder {
+    color: #aaa;
+}
+
+.form-group textarea {
+  min-height: 80px;
+  resize: vertical;
+}
+
+button {
+  padding: 10px 20px;
+  background-color: #3498db; /* Blue */
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 1em;
+  transition: background-color 0.2s ease;
+  margin-top: 10px; /* Add some space above button */
+}
+
+button:hover {
+  background-color: #2980b9; /* Darker blue */
+}
+
+/* Alert/Log Styling (Example) */
+.log-entry, .alert-entry {
+    background-color: #f9f9f9;
+    border: 1px solid #eee;
+    padding: 10px;
+    margin-bottom: 8px;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 0.9em;
+    word-wrap: break-word;
+    color: #444; /* Darker text for logs */
+    border-left: 4px solid #ccc; /* Default border */
+}
+.log-entry strong, .alert-entry strong {
+    color: #111; /* Black for emphasis */
+}
+
+.log-entry.ERROR, .alert-entry.CRITICAL {
+    border-left-color: #e74c3c; /* Red */
+    background-color: #fadbd8;
+}
+.log-entry.WARN, .alert-entry.WARN {
+    border-left-color: #f39c12; /* Orange */
+    background-color: #fdebd0;
+}
+.log-entry.INFO {
+    border-left-color: #3498db; /* Blue */
+    background-color: #ebf5fb;
+}
+.alert-entry {
+    border-left-width: 6px; /* Make alerts more prominent */
+    font-weight: bold;
+}
+.alert-entry.CRITICAL {
+    border-left-color: #c0392b; /* Darker Red */
+}
+.alert-entry.WARN {
+     border-left-color: #d35400; /* Darker Orange */
+}
+
+/* Security Dashboard Styles */
+.threat-card {
+    background: white;
+    border-radius: 8px;
+    padding: 15px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    text-align: center;
+    min-width: 120px;
+}
+
+.threat-card.critical {
+    border-left: 4px solid #c0392b;
+}
+
+.threat-card.high {
+    border-left: 4px solid #e74c3c;
+}
+
+.threat-card.medium {
+    border-left: 4px solid #f39c12;
+}
+
+.threat-card.low {
+    border-left: 4px solid #3498db;
+}
+
+.threat-card h4 {
+    margin: 0 0 10px 0;
+    font-size: 0.9em;
+    color: #666;
+}
+
+.threat-number {
+    font-size: 2em;
+    font-weight: bold;
+    color: #2c3e50;
+}
+
+.threat-entry {
+    background: #f8f9fa;
+    border: 1px solid #e9ecef;
+    border-radius: 4px;
+    padding: 10px;
+    margin: 8px 0;
+}
+
+.threat-entry.critical {
+    border-left: 4px solid #dc3545;
+    background-color: #f8d7da;
+}
+
+.threat-entry.high {
+    border-left: 4px solid #fd7e14;
+    background-color: #fff3cd;
+}
+
+.threat-entry.medium {
+    border-left: 4px solid #ffc107;
+    background-color: #fff8e1;
+}
+
+.threat-entry.low {
+    border-left: 4px solid #28a745;
+    background-color: #e8f5e8;
+}
