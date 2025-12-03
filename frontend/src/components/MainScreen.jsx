@@ -1,10 +1,12 @@
 // frontend/src/components/MainScreen.jsx
 import React, { useState, useEffect } from 'react';
-import SetupView from './SetupView';
 import VisualizerView from './VisualizerView';
 import AlertsView from './AlertsView';
 import RealTimeMonitor from './RealTimeMonitor';
 import ThreatTester from './ThreatTester';
+import IPQuarantineView from './IPQuarantineView';
+import UserManagement from './UserManagement';
+import LoginSecurityView from './LoginSecurityView';
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
 
@@ -187,8 +189,6 @@ function SystemStatus() {
 function MainScreen({ activeView }) {
   const renderView = () => {
     switch (activeView) {
-      case 'setup':
-        return <SetupView />;
       case 'monitor':
         return (
           <div className="view-container">
@@ -201,6 +201,22 @@ function MainScreen({ activeView }) {
         return <VisualizerView />;
       case 'alerts':
         return <AlertsView />;
+      case 'loginsecurity':
+        return (
+          <div className="view-container">
+            <h2>🔐 Login Security Monitor</h2>
+            <p>Track login attempts, brute force attacks, and locked IPs</p>
+            <LoginSecurityView />
+          </div>
+        );
+      case 'ipquarantine':
+        return (
+          <div className="view-container">
+            <h2>🛡️ IP Quarantine System</h2>
+            <p>Monitor and block attacking IP addresses in real-time</p>
+            <IPQuarantineView />
+          </div>
+        );
       case 'threats':
         return (
           <div className="view-container">
@@ -215,6 +231,14 @@ function MainScreen({ activeView }) {
             <h2>⚙️ System Status</h2>
             <p>IDS system health and configuration</p>
             <SystemStatus />
+          </div>
+        );
+      case 'users':
+        return (
+          <div className="view-container">
+            <h2>👥 User Management</h2>
+            <p>Manage IDS users and access control</p>
+            <UserManagement />
           </div>
         );
       default:

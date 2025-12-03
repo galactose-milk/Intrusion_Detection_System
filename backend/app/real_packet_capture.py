@@ -60,12 +60,39 @@ class PacketAnalyzer:
         b"exec(": "Code Injection",
     }
     
+    # Compromise indicators - patterns that suggest system compromise
+    COMPROMISE_SIGNATURES = {
+        b"/bin/sh": "Shell Spawn",
+        b"/bin/bash": "Bash Spawn",
+        b"nc -e": "Netcat Reverse Shell",
+        b"python -c": "Python Reverse Shell",
+        b"powershell": "PowerShell Execution",
+        b"whoami": "User Enumeration",
+        b"uname -a": "System Enumeration",
+        b"cat /etc/shadow": "Password File Access",
+        b"net user": "Windows User Enum",
+        b"wget http": "Malware Download",
+        b"curl http": "Malware Download",
+    }
+    
     # SYN flood detection threshold
     SYN_THRESHOLD = 100  # SYN packets per second from single source
     
     def __init__(self):
         self.syn_counts = defaultdict(lambda: deque(maxlen=1000))
         self.connection_attempts = defaultdict(list)
+        
+        # ===== NEW: Track ML features (wrong_fragment, urgent, num_compromised) =====
+        self.fragment_stats = defaultdict(lambda: {'wrong': 0, 'total': 0})  # IP -> fragment stats
+        self.urgent_counts = defaultdict(int)  # IP -> urgent packet count
+        self.compromise_indicators = defaultdict(int)  # IP -> compromise indicator count
+        
+        # Track per-connection stats for ML
+        self.connection_ml_features = defaultdict(lambda: {
+            'wrong_fragment': 0,
+            'urgent': 0,
+            'num_compromised': 0,
+        })
         
     def analyze_packet(self, packet) -> Dict[str, Any]:
         """Analyze a packet and return security analysis"""
@@ -74,7 +101,11 @@ class PacketAnalyzer:
             'is_suspicious': False,
             'threat_type': None,
             'severity': 'LOW',
-            'indicators': []
+            'indicators': [],
+            # ===== NEW: ML features for NSL-KDD =====
+            'wrong_fragment': 0,
+            'urgent': 0,
+            'num_compromised': 0,
         }
         
         if not packet.haslayer(IP):
@@ -87,12 +118,50 @@ class PacketAnalyzer:
         result['packet_size'] = len(packet)
         result['ttl'] = ip_layer.ttl
         
+        # Connection key for tracking
+        conn_key = f"{ip_layer.src}->{ip_layer.dst}"
+        
+        # ===== NEW: Check for wrong_fragment (IP fragmentation issues) =====
+        # MF (More Fragments) flag is bit 2, DF (Don't Fragment) is bit 1
+        # Fragment offset is in lower 13 bits of flags field
+        frag_offset = ip_layer.frag  # Fragment offset
+        mf_flag = ip_layer.flags.MF if hasattr(ip_layer.flags, 'MF') else (ip_layer.flags & 0x1)
+        df_flag = ip_layer.flags.DF if hasattr(ip_layer.flags, 'DF') else (ip_layer.flags & 0x2)
+        
+        # Track fragment stats
+        self.fragment_stats[ip_layer.src]['total'] += 1
+        
+        # Check for wrong fragment conditions:
+        # 1. Fragment offset > 0 but MF=0 and packet is small (truncated)
+        # 2. Overlapping fragments (would need reassembly tracking)
+        # 3. Fragment with offset 0 and small size but MF=1
+        is_fragmented = frag_offset > 0 or mf_flag
+        if is_fragmented:
+            # Check for suspicious fragment patterns
+            if frag_offset > 0 and len(packet) < 60:  # Tiny non-initial fragment
+                self.fragment_stats[ip_layer.src]['wrong'] += 1
+                result['wrong_fragment'] = 1
+                self.connection_ml_features[conn_key]['wrong_fragment'] += 1
+            elif mf_flag and len(packet) < 68:  # Very small fragment with more coming
+                self.fragment_stats[ip_layer.src]['wrong'] += 1
+                result['wrong_fragment'] = 1
+                self.connection_ml_features[conn_key]['wrong_fragment'] += 1
+        
         # TCP Analysis
         if packet.haslayer(TCP):
             tcp_layer = packet[TCP]
             result['src_port'] = tcp_layer.sport
             result['dst_port'] = tcp_layer.dport
             result['tcp_flags'] = str(tcp_layer.flags)
+            
+            # ===== NEW: Check for TCP URG (urgent) flag =====
+            # URG flag indicates urgent pointer is valid
+            urg_flag = tcp_layer.flags.U if hasattr(tcp_layer.flags, 'U') else (tcp_layer.flags & 0x20)
+            if urg_flag:
+                self.urgent_counts[ip_layer.src] += 1
+                result['urgent'] = 1
+                self.connection_ml_features[conn_key]['urgent'] += 1
+                result['indicators'].append('TCP URG flag set - urgent data')
             
             # Check for SYN flood
             if tcp_layer.flags == 'S':  # SYN flag
@@ -119,9 +188,11 @@ class PacketAnalyzer:
                 result['severity'] = 'MEDIUM'
                 result['indicators'].append(f'Connection to {self.SUSPICIOUS_PORTS[tcp_layer.dport]} port')
             
-            # Check for payload attacks
+            # Check for payload attacks and compromise indicators
             if packet.haslayer(Raw):
                 payload = bytes(packet[Raw].load)
+                
+                # Check for attack signatures
                 for signature, attack_type in self.ATTACK_SIGNATURES.items():
                     if signature.lower() in payload.lower():
                         result['is_suspicious'] = True
@@ -129,12 +200,31 @@ class PacketAnalyzer:
                         result['severity'] = 'CRITICAL'
                         result['indicators'].append(f'Malicious payload detected: {attack_type}')
                         break
+                
+                # ===== NEW: Check for compromise indicators (num_compromised) =====
+                for signature, compromise_type in self.COMPROMISE_SIGNATURES.items():
+                    if signature.lower() in payload.lower():
+                        self.compromise_indicators[ip_layer.src] += 1
+                        self.connection_ml_features[conn_key]['num_compromised'] += 1
+                        result['num_compromised'] = self.connection_ml_features[conn_key]['num_compromised']
+                        result['is_suspicious'] = True
+                        result['severity'] = 'CRITICAL'
+                        result['indicators'].append(f'Compromise indicator: {compromise_type}')
         
         # UDP Analysis
         elif packet.haslayer(UDP):
             udp_layer = packet[UDP]
             result['src_port'] = udp_layer.sport
             result['dst_port'] = udp_layer.dport
+            
+            # ===== NEW: Check UDP payload for compromise indicators =====
+            if packet.haslayer(Raw):
+                payload = bytes(packet[Raw].load)
+                for signature, compromise_type in self.COMPROMISE_SIGNATURES.items():
+                    if signature.lower() in payload.lower():
+                        self.compromise_indicators[ip_layer.src] += 1
+                        self.connection_ml_features[conn_key]['num_compromised'] += 1
+                        result['num_compromised'] = self.connection_ml_features[conn_key]['num_compromised']
             
             # DNS Amplification detection
             if udp_layer.sport == 53 and len(packet) > 512:
@@ -193,6 +283,33 @@ class PacketAnalyzer:
             return False
         unique_ports = set(port for port, _ in self.connection_attempts[src_ip])
         return len(unique_ports) > 20  # More than 20 different ports in 60 seconds
+    
+    # ===== NEW: Methods to get ML features for network monitor =====
+    def get_ml_features_for_connection(self, src_ip: str, dst_ip: str) -> Dict[str, int]:
+        """Get ML features (wrong_fragment, urgent, num_compromised) for a connection"""
+        conn_key = f"{src_ip}->{dst_ip}"
+        return {
+            'wrong_fragment': self.connection_ml_features[conn_key]['wrong_fragment'],
+            'urgent': self.connection_ml_features[conn_key]['urgent'],
+            'num_compromised': self.connection_ml_features[conn_key]['num_compromised'],
+        }
+    
+    def get_ml_features_for_ip(self, ip: str) -> Dict[str, int]:
+        """Get aggregate ML features for an IP address"""
+        wrong_frags = self.fragment_stats[ip]['wrong']
+        urgent = self.urgent_counts[ip]
+        compromised = self.compromise_indicators[ip]
+        return {
+            'wrong_fragment': wrong_frags,
+            'urgent': urgent,
+            'num_compromised': compromised,
+        }
+    
+    def reset_connection_features(self, src_ip: str, dst_ip: str):
+        """Reset ML features for a connection (on connection close)"""
+        conn_key = f"{src_ip}->{dst_ip}"
+        if conn_key in self.connection_ml_features:
+            del self.connection_ml_features[conn_key]
 
 
 class RealPacketCapture:

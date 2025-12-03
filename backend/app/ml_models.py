@@ -128,68 +128,147 @@ class AnomalyDetector:
         os.makedirs(model_path, exist_ok=True)
     
     def map_network_data_to_nslkdd_features(self, network_data: Dict[str, Any]) -> Dict[str, float]:
-        """Map network monitoring data to NSL-KDD feature format"""
-        # Map our network data to NSL-KDD features as closely as possible
-        features = {}
+        """Map REAL network monitoring data to NSL-KDD feature format"""
+        # Map our REAL network data to NSL-KDD features
         
-        # Initialize all NSL-KDD features with default values
+        # ===== REAL VALUES from NetworkMonitor =====
         nsl_features = {
+            # Duration - REAL: tracked from connection start time
             'duration': float(network_data.get('connection_duration', 0)),
-            'protocol_type': 1.0 if network_data.get('protocol_type', 1) == 1 else 0.0,  # TCP=1, UDP=0
-            'service': 0.0,  # Default service type
-            'flag': 0.0,     # Default flag
-            'src_bytes': float(network_data.get('bytes_per_second', 0)),
-            'dst_bytes': float(network_data.get('bytes_per_second', 0)),
-            'land': 0.0,
-            'wrong_fragment': 0.0,
-            'urgent': 0.0,
-            'hot': 0.0,
-            'num_failed_logins': float(network_data.get('failed_logins', 0)),
-            'logged_in': 1.0 if network_data.get('failed_logins', 0) == 0 else 0.0,
-            'num_compromised': 0.0,
-            'root_shell': float(network_data.get('num_root_access', 0)),
-            'su_attempted': 1.0 if network_data.get('num_root_access', 0) > 0 else 0.0,
-            'num_root': float(network_data.get('num_root_access', 0)),
-            'num_file_creations': 0.0,
-            'num_shells': 0.0,
-            'num_access_files': 0.0,
-            'num_outbound_cmds': 0.0,
-            'is_host_login': 0.0,
+            
+            # Protocol - REAL: from psutil connection type
+            'protocol_type': float(network_data.get('protocol_type', 1)),  # TCP=1, UDP=2
+            
+            # Service - mapped from port
+            'service': self._encode_service(network_data.get('dst_port', 0)),
+            
+            # Flag - mapped from connection status
+            'flag': self._encode_flag(network_data.get('status', 'ESTABLISHED')),
+            
+            # Bytes - REAL: from network I/O monitoring
+            'src_bytes': float(network_data.get('src_bytes', network_data.get('bytes_per_second', 0))),
+            'dst_bytes': float(network_data.get('dst_bytes', network_data.get('bytes_per_second', 0))),
+            
+            # Land attack detection (src=dst)
+            'land': 1.0 if network_data.get('src_ip') == network_data.get('dst_ip') else 0.0,
+            
+            # ===== PACKET-LEVEL FEATURES - REAL from Scapy packet capture =====
+            # These require packet-level inspection and are now tracked by PacketAnalyzer
+            'wrong_fragment': float(network_data.get('wrong_fragment', 0)),  # REAL: from IP fragmentation analysis
+            'urgent': float(network_data.get('urgent', 0)),  # REAL: from TCP URG flag detection
+            
+            # Hot indicators - detect from port access patterns
+            'hot': self._calculate_hot_indicator(network_data),
+            
+            # Login features - REAL: from login_rate_limiter via network monitor
+            'num_failed_logins': float(network_data.get('num_failed_logins', 0)),
+            'logged_in': float(network_data.get('is_logged_in', 1 if network_data.get('status') == 'ESTABLISHED' else 0)),
+            
+            # Compromise indicators - REAL: from login tracking and packet analysis
+            'num_compromised': float(network_data.get('num_compromised', 0)),  # REAL: from payload analysis
+            'root_shell': float(network_data.get('num_root', 0)),
+            'su_attempted': float(network_data.get('su_attempted', 0)),
+            'num_root': float(network_data.get('num_root', 0)),
+            'num_file_creations': float(network_data.get('num_file_creations', 0)),  # REAL from process monitoring
+            'num_shells': float(network_data.get('num_shells', 0)),  # REAL from process monitoring
+            'num_access_files': float(network_data.get('num_access_files', 0)),  # REAL from process monitoring
+            'num_outbound_cmds': float(network_data.get('num_outbound_cmds', 0)),  # REAL: outbound command connections
+            'is_host_login': float(network_data.get('is_host_login', 0)),
             'is_guest_login': float(network_data.get('is_guest_login', 0)),
-            'count': float(network_data.get('packets_per_second', 1)),
-            'srv_count': 1.0,
-            'serror_rate': 0.1 if network_data.get('failed_logins', 0) > 0 else 0.0,
-            'srv_serror_rate': 0.0,
-            'rerror_rate': 0.0,
-            'srv_rerror_rate': 0.0,
-            'same_srv_rate': 1.0,
-            'diff_srv_rate': 0.0,
-            'srv_diff_host_rate': 0.0,
-            'dst_host_count': 1.0,
-            'dst_host_srv_count': 1.0,
-            'dst_host_same_srv_rate': 1.0,
-            'dst_host_diff_srv_rate': 0.0,
-            'dst_host_same_src_port_rate': 1.0,
-            'dst_host_srv_diff_host_rate': 0.0,
-            'dst_host_serror_rate': 0.0,
-            'dst_host_srv_serror_rate': 0.0,
-            'dst_host_rerror_rate': 0.0,
-            'dst_host_srv_rerror_rate': 0.0,
+            
+            # ===== TRAFFIC FEATURES - REAL from NetworkMonitor =====
+            # Count - REAL: connections to same host in time window
+            'count': min(255.0, float(network_data.get('count', 1))),
+            
+            # Srv_count - REAL: connections to same service
+            'srv_count': min(255.0, float(network_data.get('srv_count', 1))),
+            
+            # Error rates - REAL: calculated from connection states
+            'serror_rate': float(network_data.get('serror_rate', 0.0)),
+            'srv_serror_rate': float(network_data.get('srv_serror_rate', 0.0)),
+            'rerror_rate': float(network_data.get('rerror_rate', 0.0)),
+            'srv_rerror_rate': float(network_data.get('srv_rerror_rate', 0.0)),
+            
+            # Service rates - REAL: calculated from service access patterns
+            'same_srv_rate': float(network_data.get('same_srv_rate', 1.0)),
+            'diff_srv_rate': float(network_data.get('diff_srv_rate', 0.0)),
+            'srv_diff_host_rate': float(network_data.get('srv_diff_host_rate', 0.0)),  # REAL: multi-host tracking
+            
+            # ===== HOST-BASED FEATURES - REAL from NetworkMonitor =====
+            'dst_host_count': min(255.0, float(network_data.get('dst_host_count', 1))),
+            'dst_host_srv_count': min(255.0, float(network_data.get('dst_host_srv_count', 1))),
+            'dst_host_same_srv_rate': float(network_data.get('dst_host_same_srv_rate', 1.0)),
+            'dst_host_diff_srv_rate': float(network_data.get('dst_host_diff_srv_rate', 0.0)),
+            'dst_host_same_src_port_rate': float(network_data.get('dst_host_same_src_port_rate', 1.0)),  # REAL: port pattern tracking
+            'dst_host_srv_diff_host_rate': float(network_data.get('dst_host_srv_diff_host_rate', 0.0)),  # REAL: multi-host tracking
+            'dst_host_serror_rate': float(network_data.get('dst_host_serror_rate', 0.0)),
+            'dst_host_srv_serror_rate': float(network_data.get('dst_host_srv_serror_rate', 0.0)),
+            'dst_host_rerror_rate': float(network_data.get('dst_host_rerror_rate', 0.0)),
+            'dst_host_srv_rerror_rate': float(network_data.get('dst_host_srv_rerror_rate', 0.0)),
         }
         
-        # Map packet size to src_bytes/dst_bytes
-        if 'packet_size' in network_data:
-            packet_size = float(network_data['packet_size'])
-            nsl_features['src_bytes'] = packet_size
-            nsl_features['dst_bytes'] = packet_size
+        # ===== ENHANCE with attack-specific patterns =====
+        event_type = network_data.get('event_type', '')
         
-        # Map high packet/byte rates to suspicious indicators  
+        # Port scan detection
+        if event_type == 'port_scan' or network_data.get('ports_scanned', 0) > 5:
+            nsl_features['count'] = max(nsl_features['count'], 50.0)
+            nsl_features['diff_srv_rate'] = 0.9
+            nsl_features['same_srv_rate'] = 0.1
+            nsl_features['dst_host_diff_srv_rate'] = 0.9
+        
+        # DDoS / high traffic detection
         packets_per_sec = network_data.get('packets_per_second', 0)
-        if packets_per_sec > 50:  # High rate
-            nsl_features['serror_rate'] = min(0.5, packets_per_sec / 200.0)
+        if packets_per_sec > 100:
             nsl_features['count'] = min(255.0, float(packets_per_sec))
+            nsl_features['serror_rate'] = min(1.0, packets_per_sec / 500.0)
+        
+        # Brute force detection
+        if event_type == 'brute_force' or network_data.get('failed_logins', 0) > 3:
+            nsl_features['num_failed_logins'] = float(network_data.get('failed_logins', 5))
+            nsl_features['logged_in'] = 0.0
+            nsl_features['serror_rate'] = 0.5
         
         return nsl_features
+    
+    def _encode_service(self, port: int) -> float:
+        """Encode port to service category (0-70 range like NSL-KDD)"""
+        service_encoding = {
+            20: 1, 21: 2, 22: 3, 23: 4, 25: 5,  # ftp-data, ftp, ssh, telnet, smtp
+            53: 6, 80: 7, 110: 8, 143: 9, 443: 10,  # dns, http, pop3, imap, https
+            445: 11, 993: 12, 995: 13, 3306: 14, 3389: 15,  # smb, imaps, pop3s, mysql, rdp
+            5432: 16, 6379: 17, 27017: 18, 8080: 19, 8443: 20  # postgresql, redis, mongodb, http-alt
+        }
+        return float(service_encoding.get(port, 0))
+    
+    def _encode_flag(self, status: str) -> float:
+        """Encode connection status to flag (0-11 range like NSL-KDD)"""
+        flag_encoding = {
+            'ESTABLISHED': 0, 'SYN_SENT': 1, 'SYN_RECV': 2, 
+            'FIN_WAIT1': 3, 'FIN_WAIT2': 4, 'TIME_WAIT': 5,
+            'CLOSE': 6, 'CLOSE_WAIT': 7, 'LAST_ACK': 8,
+            'LISTEN': 9, 'CLOSING': 10, 'NONE': 11
+        }
+        return float(flag_encoding.get(status, 0))
+    
+    def _calculate_hot_indicator(self, network_data: Dict) -> float:
+        """Calculate 'hot' indicator based on access patterns"""
+        hot = 0.0
+        
+        # Suspicious ports increase hot indicator
+        suspicious_ports = {23, 135, 139, 445, 1433, 3306, 3389, 5900}
+        if network_data.get('dst_port') in suspicious_ports:
+            hot += 2.0
+        
+        # High connection rate increases hot
+        if network_data.get('count', 0) > 20:
+            hot += 1.0
+        
+        # Error conditions increase hot
+        if network_data.get('serror_rate', 0) > 0.3:
+            hot += 1.0
+            
+        return min(hot, 10.0)  # Cap at 10
     
     def train_model_with_nslkdd(self, use_subset: bool = True) -> bool:
         """Train models using NSL-KDD dataset"""

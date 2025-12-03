@@ -8,8 +8,9 @@ import os
 import random
 import asyncio
 from datetime import datetime, timedelta, timezone
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, WebSocket, WebSocketDisconnect, Request, Response, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional, List
 import json
@@ -22,13 +23,15 @@ from .attack_detector import intrusion_engine, AttackType, Severity
 from .real_packet_capture import packet_capture, SCAPY_AVAILABLE
 from .threat_generator import threat_generator, ThreatProcess
 from .process_quarantine import quarantine_system, ResponseAction, ThreatLevel
+from .ip_quarantine import ip_quarantine, BlockAction as IPBlockAction
+from .auth import (
+    user_store, login_user, verify_token, get_current_user, get_current_user_optional,
+    require_role, UserCreate, UserLogin, TokenResponse, UserResponse, login_rate_limiter
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# --- Configuration ---
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 
 # --- Pydantic Models ---
@@ -87,6 +90,8 @@ app = FastAPI(
 )
 
 # --- CORS Configuration ---
+# Allow all origins for network-wide access (attacks from other machines)
+# In production, you would restrict this to specific IPs
 origins = [
     "http://localhost",
     "http://localhost:3000",
@@ -95,16 +100,88 @@ origins = [
     "http://localhost:5175",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:5174",
-    "http://127.0.0.1:5175"
+    "http://127.0.0.1:5175",
+    "*"  # Allow all origins for network attack testing
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],  # Allow all origins for testing
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# --- IP Quarantine Middleware ---
+class IPQuarantineMiddleware(BaseHTTPMiddleware):
+    """
+    Middleware to detect and block attacking IPs.
+    Records every request and checks for attack patterns.
+    """
+    
+    # Endpoints to exclude from rate limiting (health checks, etc.)
+    EXCLUDED_ENDPOINTS = {'/health', '/docs', '/openapi.json', '/redoc'}
+    
+    async def dispatch(self, request: Request, call_next):
+        # Get client IP
+        client_ip = self._get_client_ip(request)
+        endpoint = request.url.path
+        
+        # Skip excluded endpoints
+        if endpoint in self.EXCLUDED_ENDPOINTS:
+            return await call_next(request)
+        
+        # Record request and check for attacks
+        detection_result = ip_quarantine.record_request(client_ip, endpoint)
+        
+        # If blocked, return 429 Too Many Requests
+        if detection_result.get('blocked'):
+            return Response(
+                content=json.dumps({
+                    'error': 'IP Blocked',
+                    'reason': detection_result.get('reason', 'Attack detected'),
+                    'unblock_time': detection_result.get('unblock_time'),
+                    'message': 'Your IP has been temporarily blocked due to suspicious activity'
+                }),
+                status_code=429,
+                media_type='application/json'
+            )
+        
+        # Process the request
+        response = await call_next(request)
+        
+        # Record the response status for failed request tracking
+        if response.status_code >= 400:
+            ip_quarantine.record_request(client_ip, endpoint, response.status_code)
+        
+        # Add security headers
+        response.headers['X-Request-Rate'] = str(int(ip_quarantine.ip_stats.get(client_ip, {}).requests_per_minute if hasattr(ip_quarantine.ip_stats.get(client_ip, {}), 'requests_per_minute') else 0))
+        
+        return response
+    
+    def _get_client_ip(self, request: Request) -> str:
+        """Extract client IP from request, handling proxies"""
+        # Check for forwarded headers (reverse proxy)
+        forwarded_for = request.headers.get('X-Forwarded-For')
+        if forwarded_for:
+            # Take the first IP (original client)
+            return forwarded_for.split(',')[0].strip()
+        
+        # Check X-Real-IP
+        real_ip = request.headers.get('X-Real-IP')
+        if real_ip:
+            return real_ip
+        
+        # Fall back to direct client
+        if request.client:
+            return request.client.host
+        
+        return '0.0.0.0'
+
+
+# Add the IP quarantine middleware
+app.add_middleware(IPQuarantineMiddleware)
 
 # --- Global State ---
 monitoring_configs: Dict[str, NetworkSetupDetails] = {}
@@ -157,9 +234,28 @@ async def startup_event():
     # Start network monitoring
     start_network_monitoring()
     
+    # Set up IP quarantine alert callback for WebSocket broadcasting
+    async def ip_attack_alert_callback(alert):
+        """Broadcast IP attack alerts to WebSocket clients"""
+        try:
+            await manager.broadcast({
+                'type': 'ip_attack_detected',
+                'alert': alert.to_dict(),
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            })
+        except Exception as e:
+            logger.error(f"Error broadcasting IP attack alert: {e}")
+    
+    # We need a sync wrapper for the async callback
+    def sync_alert_wrapper(alert):
+        asyncio.create_task(ip_attack_alert_callback(alert))
+    
+    ip_quarantine.add_alert_callback(sync_alert_wrapper)
+    
     # Start background tasks
     asyncio.create_task(continuous_threat_analysis())
     asyncio.create_task(real_time_broadcast())
+    asyncio.create_task(ip_quarantine.auto_cleanup_task())
     
     # Check if scapy is available for deep packet capture
     if SCAPY_AVAILABLE:
@@ -170,6 +266,7 @@ async def startup_event():
     print("✅ IDS initialization complete!")
     print("🔴 REAL-TIME monitoring active - analyzing actual network traffic")
     print("🔍 ML-powered attack detection engine ready")
+    print("🛡️  IP Quarantine system active - detecting and blocking attacking IPs")
 
 
 # --- WebSocket Endpoint ---
@@ -348,6 +445,69 @@ async def get_threat_analysis(
                 logger.error(f"Error analyzing network event: {str(e)}")
                 continue
     
+    # Add IP quarantine alerts to security_alerts
+    ip_alerts = ip_quarantine.get_recent_alerts(limit=100)
+    for ip_alert in ip_alerts:
+        try:
+            # Map attack type to severity
+            severity_map = {
+                'dos_flood': 'CRITICAL',
+                'ddos_flood': 'CRITICAL', 
+                'rate_limit': 'HIGH',
+                'endpoint_scan': 'HIGH',
+                'brute_force': 'HIGH',
+                'suspicious': 'MEDIUM'
+            }
+            severity = severity_map.get(ip_alert.get('attack_type', ''), 'MEDIUM')
+            
+            alert = SecurityAlert(
+                id=f"IP-{ip_alert.get('timestamp', datetime.now().isoformat())}-{ip_alert.get('ip', 'unknown')[:8]}",
+                timestamp=datetime.fromisoformat(ip_alert.get('timestamp', datetime.now().isoformat()).replace('Z', '+00:00')) if isinstance(ip_alert.get('timestamp'), str) else datetime.now(timezone.utc),
+                severity=severity,
+                alert_type=f"IP_{ip_alert.get('attack_type', 'unknown').upper()}",
+                source_ip=ip_alert.get('ip'),
+                destination_ip="IDS Server",
+                description=ip_alert.get('message', 'IP-based attack detected'),
+                ml_confidence=0.95,
+                threat_score=ip_alert.get('threat_score', 8),
+                details={
+                    'action': ip_alert.get('action'),
+                    'requests_per_minute': ip_alert.get('requests_per_minute'),
+                    'total_requests': ip_alert.get('total_requests')
+                }
+            )
+            security_alerts.append(alert)
+        except Exception as e:
+            logger.error(f"Error converting IP alert: {e}")
+    
+    # Also add suspicious activities from network monitor as alerts
+    suspicious_activities = network_monitor.get_suspicious_activities(limit=50)
+    for activity in suspicious_activities:
+        try:
+            activity_severity = activity.get('severity', 'MEDIUM')
+            alert = SecurityAlert(
+                id=f"NET-{activity.get('timestamp', datetime.now().isoformat())[:19].replace(':', '-')}",
+                timestamp=datetime.fromisoformat(activity.get('timestamp', datetime.now().isoformat()).replace('Z', '+00:00')) if isinstance(activity.get('timestamp'), str) else datetime.now(timezone.utc),
+                severity=activity_severity,
+                alert_type=activity.get('event_type', 'suspicious_activity').upper(),
+                source_ip=activity.get('source_ip', 'unknown'),
+                destination_ip=f"port:{activity.get('destination_port', 'unknown')}",
+                description="; ".join(activity.get('reasons', ['Suspicious network activity detected'])),
+                ml_confidence=0.85,
+                threat_score=8 if activity_severity == 'HIGH' else 5,
+                details={
+                    'is_real_traffic': activity.get('is_real_traffic', True),
+                    'destination_port': activity.get('destination_port')
+                }
+            )
+            # Avoid duplicates
+            if not any(a.source_ip == alert.source_ip and a.alert_type == alert.alert_type 
+                      and abs((a.timestamp - alert.timestamp).total_seconds()) < 60 
+                      for a in security_alerts):
+                security_alerts.append(alert)
+        except Exception as e:
+            logger.error(f"Error converting suspicious activity: {e}")
+    
     # Filter alerts by severity if requested
     filtered_alerts = security_alerts
     if severity_filter:
@@ -466,9 +626,116 @@ async def get_detection_alerts(
         severity=severity,
         attack_type=attack_type
     )
+    
+    # Also include IP quarantine alerts
+    ip_alerts = ip_quarantine.get_recent_alerts(limit=50)
+    for ip_alert in ip_alerts:
+        severity_map = {
+            'dos_flood': 'CRITICAL',
+            'ddos_flood': 'CRITICAL', 
+            'rate_limit': 'HIGH',
+            'endpoint_scan': 'HIGH',
+            'brute_force': 'HIGH',
+            'suspicious': 'MEDIUM'
+        }
+        alert_severity = severity_map.get(ip_alert.get('attack_type', ''), 'MEDIUM')
+        
+        # Apply severity filter if specified
+        if severity and alert_severity != severity:
+            continue
+            
+        alerts.append({
+            'id': f"IP-{ip_alert.get('ip', 'unknown')[:8]}-{len(alerts)}",
+            'timestamp': ip_alert.get('timestamp', datetime.now(timezone.utc).isoformat()),
+            'attack_type': f"IP_{ip_alert.get('attack_type', 'unknown').upper()}",
+            'severity': alert_severity,
+            'source_ip': ip_alert.get('ip'),
+            'destination_ip': 'IDS Server',
+            'description': ip_alert.get('message', 'IP-based attack detected'),
+            'indicators': [
+                f"Action: {ip_alert.get('action', 'detected')}",
+                f"Requests/min: {ip_alert.get('requests_per_minute', 'N/A')}"
+            ],
+            'confidence': 0.95,
+            'mitre_tactics': ['TA0040 - Impact', 'TA0042 - Resource Development'],
+            'recommended_actions': [
+                f"IP {ip_alert.get('ip')} has been automatically blocked",
+                'Monitor for continued attack attempts',
+                'Review firewall rules'
+            ]
+        })
+    
+    # Also include suspicious activities from network monitor
+    suspicious_activities = network_monitor.get_suspicious_activities(limit=50)
+    for activity in suspicious_activities:
+        activity_severity = activity.get('severity', 'MEDIUM')
+        
+        # Apply severity filter if specified
+        if severity and activity_severity != severity:
+            continue
+        
+        alerts.append({
+            'id': f"NET-{activity.get('timestamp', '')[:19].replace(':', '-')}-{len(alerts)}",
+            'timestamp': activity.get('timestamp', datetime.now(timezone.utc).isoformat()),
+            'attack_type': activity.get('event_type', 'SUSPICIOUS_ACTIVITY').upper(),
+            'severity': activity_severity,
+            'source_ip': activity.get('source_ip', 'unknown'),
+            'destination_ip': f"port:{activity.get('destination_port', 'unknown')}",
+            'description': "; ".join(activity.get('reasons', ['Suspicious network activity detected'])),
+            'indicators': activity.get('reasons', []),
+            'confidence': 0.85,
+            'mitre_tactics': ['TA0043 - Reconnaissance', 'TA0007 - Discovery'],
+            'recommended_actions': [
+                'Review network traffic patterns',
+                'Check for unauthorized access attempts',
+                'Enable enhanced logging'
+            ]
+        })
+    
+    # Also include login security alerts (brute force, credential stuffing)
+    login_alerts = login_rate_limiter.get_recent_alerts(limit=50)
+    for login_alert in login_alerts:
+        alert_severity = login_alert.get('severity', 'MEDIUM')
+        
+        # Apply severity filter if specified
+        if severity and alert_severity != severity:
+            continue
+        
+        # Map login alert types to readable names
+        alert_type_map = {
+            'brute_force_detected': 'LOGIN_BRUTE_FORCE',
+            'credential_stuffing_detected': 'CREDENTIAL_STUFFING',
+            'login_failures_warning': 'LOGIN_FAILURES',
+            'login_success_after_failures': 'SUSPICIOUS_LOGIN'
+        }
+        
+        alerts.append({
+            'id': f"LOGIN-{login_alert.get('ip', 'unknown')[:8]}-{len(alerts)}",
+            'timestamp': login_alert.get('timestamp', datetime.now(timezone.utc).isoformat()),
+            'attack_type': alert_type_map.get(login_alert.get('type'), 'LOGIN_ATTACK'),
+            'severity': alert_severity,
+            'source_ip': login_alert.get('ip'),
+            'destination_ip': 'IDS Auth Server',
+            'description': login_alert.get('message', 'Login attack detected'),
+            'indicators': [
+                f"Failed attempts: {login_alert.get('failed_attempts', 'N/A')}",
+                f"Usernames tried: {', '.join(login_alert.get('attempted_usernames', [])[:5])}"
+            ],
+            'confidence': 0.95,
+            'mitre_tactics': ['TA0006 - Credential Access', 'TA0001 - Initial Access'],
+            'recommended_actions': [
+                f"IP {login_alert.get('ip')} login blocked for {login_alert.get('lockout_minutes', 15)} minutes" if login_alert.get('type') == 'brute_force_detected' else 'Monitor for continued attempts',
+                'Review authentication logs',
+                'Consider IP blocking at firewall level'
+            ]
+        })
+    
+    # Sort by timestamp descending
+    alerts.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+    
     return {
         "total": len(alerts),
-        "alerts": alerts,
+        "alerts": alerts[:limit],
         "filters": {
             "severity": severity,
             "attack_type": attack_type
@@ -481,7 +748,40 @@ async def get_detection_alerts(
 async def get_detection_statistics():
     """Get intrusion detection statistics from REAL traffic"""
     stats = intrusion_engine.get_statistics()
+    
+    # Add IP quarantine stats
+    ip_stats = ip_quarantine.get_statistics()
+    
+    # Add suspicious activity counts
+    suspicious_activities = network_monitor.get_suspicious_activities(limit=100)
+    
+    # Combine stats
+    stats["alerts_generated"] = stats.get("alerts_generated", 0) + ip_stats.get("total_attacks_detected", 0) + len(suspicious_activities)
+    
+    # Count severities from suspicious activities
+    for activity in suspicious_activities:
+        sev = activity.get('severity', 'MEDIUM')
+        stats["attacks_by_severity"][sev] = stats["attacks_by_severity"].get(sev, 0) + 1
+        
+        event_type = activity.get('event_type', 'unknown')
+        stats["attacks_by_type"][event_type] = stats["attacks_by_type"].get(event_type, 0) + 1
+        
+        source = activity.get('source_ip', 'unknown')
+        stats["top_attackers"][source] = stats["top_attackers"].get(source, 0) + 1
+    
+    # Add IP quarantine blocked IPs as attackers
+    for blocked_ip in ip_quarantine.get_blocked_ips():
+        ip = blocked_ip.get('ip', 'unknown')
+        stats["top_attackers"][ip] = stats["top_attackers"].get(ip, 0) + 10  # Weight blocked IPs higher
+        stats["attacks_by_severity"]["CRITICAL"] = stats["attacks_by_severity"].get("CRITICAL", 0) + 1
+        stats["attacks_by_type"]["IP_BLOCKED"] = stats["attacks_by_type"].get("IP_BLOCKED", 0) + 1
+    
     stats["data_source"] = "REAL_NETWORK_TRAFFIC"
+    stats["ip_quarantine"] = {
+        "currently_blocked": ip_stats.get("currently_blocked", 0),
+        "total_attacks": ip_stats.get("total_attacks_detected", 0)
+    }
+    
     return stats
 
 
@@ -524,6 +824,308 @@ async def get_system_status():
         },
         "monitoring_stats": network_monitor.get_connection_stats(),
         "mode": "PRODUCTION_REAL_TRAFFIC"
+    }
+
+
+# =============================================================================
+# AUTHENTICATION ENDPOINTS
+# =============================================================================
+# User authentication and management for the IDS dashboard.
+
+@app.post("/api/auth/login", tags=["Authentication"])
+async def login(credentials: UserLogin, request: Request):
+    """
+    Authenticate user and return JWT token.
+    
+    **Rate Limited**: Max 5 failed attempts before 15-minute lockout.
+    
+    Default credentials:
+    - Username: admin
+    - Password: admin123
+    """
+    # Get client IP
+    client_ip = request.client.host if request.client else "unknown"
+    
+    # Check X-Forwarded-For for proxy setups
+    forwarded_for = request.headers.get('X-Forwarded-For')
+    if forwarded_for:
+        client_ip = forwarded_for.split(',')[0].strip()
+    
+    # Check rate limit FIRST
+    rate_check = login_rate_limiter.check_rate_limit(client_ip)
+    if not rate_check['allowed']:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "error": "Too many failed login attempts",
+                "message": rate_check['reason'],
+                "retry_after": rate_check['retry_after'],
+                "failed_attempts": rate_check['failed_attempts']
+            },
+            headers={"Retry-After": str(rate_check['retry_after'])}
+        )
+    
+    # Attempt login
+    result = login_user(credentials.username, credentials.password)
+    
+    if result is None:
+        # Record failed attempt
+        attempt_result = login_rate_limiter.record_attempt(client_ip, credentials.username, success=False)
+        
+        detail = {
+            "error": "Invalid username or password",
+            "failed_attempts": attempt_result['failed_attempts'],
+            "max_attempts": attempt_result['max_attempts']
+        }
+        
+        if attempt_result.get('locked'):
+            detail["locked"] = True
+            detail["retry_after"] = attempt_result['retry_after']
+            detail["message"] = attempt_result['message']
+            
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=detail,
+                headers={"Retry-After": str(attempt_result['retry_after'])}
+            )
+        
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=detail,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Record successful login
+    login_rate_limiter.record_attempt(client_ip, credentials.username, success=True)
+    logger.info(f"User logged in: {credentials.username} from {client_ip}")
+    return result
+
+
+@app.post("/api/auth/register", response_model=UserResponse, tags=["Authentication"])
+async def register(user: UserCreate, current_user: Dict = Depends(require_role(["admin"]))):
+    """
+    Register a new user. Only admins can create new users.
+    
+    Roles available:
+    - admin: Full access to all features
+    - operator: Can view and respond to threats
+    - viewer: Read-only access to dashboards
+    """
+    result = user_store.create_user(user)
+    
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username already exists"
+        )
+    
+    logger.info(f"New user registered: {user.username} (by {current_user['username']})")
+    return result
+
+
+@app.get("/api/auth/me", tags=["Authentication"])
+async def get_current_user_info(current_user: Dict = Depends(get_current_user)):
+    """Get current authenticated user information"""
+    user_data = user_store.get_user(current_user["username"])
+    if not user_data:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    return UserResponse(
+        id=user_data["id"],
+        username=user_data["username"],
+        role=user_data["role"],
+        created_at=user_data["created_at"],
+        last_login=user_data.get("last_login"),
+        is_active=user_data.get("is_active", True)
+    )
+
+
+@app.get("/api/auth/verify", tags=["Authentication"])
+async def verify_current_token(current_user: Dict = Depends(get_current_user)):
+    """Verify that the current token is valid"""
+    return {
+        "valid": True,
+        "username": current_user["username"],
+        "role": current_user["role"]
+    }
+
+
+@app.get("/api/auth/users", tags=["Authentication"])
+async def list_users(current_user: Dict = Depends(require_role(["admin"]))):
+    """List all users. Admin only."""
+    return {
+        "users": user_store.get_all_users(),
+        "total": len(user_store.users)
+    }
+
+
+class UserUpdateRequest(BaseModel):
+    password: Optional[str] = Field(None, min_length=6)
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+@app.put("/api/auth/users/{username}", tags=["Authentication"])
+async def update_user(
+    username: str, 
+    updates: UserUpdateRequest,
+    current_user: Dict = Depends(require_role(["admin"]))
+):
+    """Update user. Admin only."""
+    if username not in user_store.users:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    update_dict = {}
+    if updates.password:
+        update_dict["password"] = updates.password
+    if updates.role:
+        update_dict["role"] = updates.role
+    if updates.is_active is not None:
+        update_dict["is_active"] = updates.is_active
+    
+    if update_dict:
+        user_store.update_user(username, update_dict)
+    
+    return {"status": "success", "message": f"User {username} updated"}
+
+
+@app.delete("/api/auth/users/{username}", tags=["Authentication"])
+async def delete_user(username: str, current_user: Dict = Depends(require_role(["admin"]))):
+    """Delete user. Admin only. Cannot delete yourself."""
+    if username == current_user["username"]:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+    
+    if not user_store.delete_user(username):
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    return {"status": "success", "message": f"User {username} deleted"}
+
+
+@app.post("/api/auth/change-password", tags=["Authentication"])
+async def change_password(
+    old_password: str,
+    new_password: str,
+    current_user: Dict = Depends(get_current_user)
+):
+    """Change current user's password"""
+    user = user_store.get_user(current_user["username"])
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Verify old password
+    from .auth import verify_password
+    if not verify_password(old_password, user["password_hash"]):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    
+    # Update password
+    user_store.update_user(current_user["username"], {"password": new_password})
+    
+    return {"status": "success", "message": "Password changed successfully"}
+
+
+# =============================================================================
+# LOGIN SECURITY / BRUTE FORCE DETECTION ENDPOINTS
+# =============================================================================
+# Monitor and manage login attempts, detect brute force attacks.
+
+@app.get("/api/login-security/status", tags=["Login Security"])
+async def get_login_security_status(current_user: Dict = Depends(get_current_user)):
+    """Get login security status and statistics"""
+    stats = login_rate_limiter.get_statistics()
+    stats['timestamp'] = datetime.now(timezone.utc).isoformat()
+    return stats
+
+
+@app.get("/api/login-security/alerts", tags=["Login Security"])
+async def get_login_alerts(
+    limit: int = Query(50, ge=1, le=500),
+    current_user: Dict = Depends(get_current_user)
+):
+    """Get recent login attack alerts"""
+    alerts = login_rate_limiter.get_recent_alerts(limit=limit)
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "total": len(alerts),
+        "alerts": alerts
+    }
+
+
+@app.get("/api/login-security/tracked-ips", tags=["Login Security"])
+async def get_tracked_login_ips(
+    limit: int = Query(50, ge=1, le=200),
+    current_user: Dict = Depends(get_current_user)
+):
+    """Get all tracked IPs with login attempt info"""
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "tracked_ips": login_rate_limiter.get_all_trackers(limit=limit)
+    }
+
+
+@app.get("/api/login-security/ip/{ip_address}", tags=["Login Security"])
+async def get_ip_login_status(
+    ip_address: str,
+    current_user: Dict = Depends(get_current_user)
+):
+    """Get login attempt status for specific IP"""
+    status = login_rate_limiter.get_ip_status(ip_address)
+    if status:
+        return {
+            "found": True,
+            "ip_status": status
+        }
+    return {
+        "found": False,
+        "message": f"No login attempts tracked for IP: {ip_address}"
+    }
+
+
+@app.post("/api/login-security/unlock/{ip_address}", tags=["Login Security"])
+async def unlock_ip_login(
+    ip_address: str,
+    current_user: Dict = Depends(require_role(["admin"]))
+):
+    """Manually unlock an IP that was locked due to failed logins. Admin only."""
+    success = login_rate_limiter.unlock_ip(ip_address)
+    if success:
+        return {
+            "status": "success",
+            "message": f"IP {ip_address} has been unlocked"
+        }
+    return {
+        "status": "not_found",
+        "message": f"IP {ip_address} was not found or not locked"
+    }
+
+
+class LoginThresholdUpdate(BaseModel):
+    max_attempts: Optional[int] = Field(None, ge=1, le=100)
+    lockout_minutes: Optional[int] = Field(None, ge=1, le=1440)
+
+
+@app.put("/api/login-security/thresholds", tags=["Login Security"])
+async def update_login_thresholds(
+    updates: LoginThresholdUpdate,
+    current_user: Dict = Depends(require_role(["admin"]))
+):
+    """Update login rate limiting thresholds. Admin only."""
+    old_values = {
+        "max_attempts": login_rate_limiter.max_attempts,
+        "lockout_minutes": login_rate_limiter.lockout_minutes
+    }
+    
+    if updates.max_attempts is not None:
+        login_rate_limiter.max_attempts = updates.max_attempts
+    if updates.lockout_minutes is not None:
+        login_rate_limiter.lockout_minutes = updates.lockout_minutes
+    
+    return {
+        "status": "success",
+        "old_values": old_values,
+        "new_values": {
+            "max_attempts": login_rate_limiter.max_attempts,
+            "lockout_minutes": login_rate_limiter.lockout_minutes
+        }
     }
 
 
@@ -932,3 +1534,287 @@ async def get_system_resources():
         "top_memory_processes": top_memory[:10],
         "test_threats_active": len(threat_generator.get_active_threats())
     }
+
+
+# =============================================================================
+# IP QUARANTINE ENDPOINTS
+# =============================================================================
+# These endpoints manage IP-based attack detection and blocking.
+# Works with the IPQuarantineMiddleware to detect and block attacking IPs.
+
+class IPBlockRequest(BaseModel):
+    ip: str = Field(..., description="IP address to block")
+    reason: str = Field("Manual block", description="Reason for blocking")
+    duration: int = Field(900, description="Block duration in seconds (0 for permanent)")
+
+
+class IPUnblockRequest(BaseModel):
+    ip: str = Field(..., description="IP address to unblock")
+
+
+class IPThresholdUpdate(BaseModel):
+    threshold_name: str = Field(..., description="Name of threshold to update")
+    value: int = Field(..., description="New threshold value")
+
+
+@app.get("/api/ip-quarantine/status", tags=["IP Quarantine"])
+async def get_ip_quarantine_status():
+    """Get overall IP quarantine system status and statistics"""
+    stats = ip_quarantine.get_statistics()
+    stats['blocked_ips'] = ip_quarantine.get_blocked_ips()
+    return stats
+
+
+@app.get("/api/ip-quarantine/blocked", tags=["IP Quarantine"])
+async def get_blocked_ips():
+    """Get all currently blocked IPs with details"""
+    blocked = ip_quarantine.get_blocked_ips()
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "blocked_count": len(blocked),
+        "blocked_ips": blocked
+    }
+
+
+@app.get("/api/ip-quarantine/all-stats", tags=["IP Quarantine"])
+async def get_all_ip_stats(limit: int = Query(50, ge=1, le=500)):
+    """Get statistics for all tracked IPs (sorted by activity)"""
+    all_stats = ip_quarantine.get_all_ip_stats(limit=limit)
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "total_ips_tracked": len(ip_quarantine.ip_stats),
+        "showing": len(all_stats),
+        "ip_stats": all_stats
+    }
+
+
+@app.get("/api/ip-quarantine/ip/{ip_address}", tags=["IP Quarantine"])
+async def get_ip_details(ip_address: str):
+    """Get detailed statistics for a specific IP address"""
+    stats = ip_quarantine.get_ip_stats(ip_address)
+    if stats:
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "found": True,
+            "ip_stats": stats
+        }
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "found": False,
+        "message": f"No data for IP: {ip_address}"
+    }
+
+
+@app.get("/api/ip-quarantine/alerts", tags=["IP Quarantine"])
+async def get_ip_attack_alerts(limit: int = Query(50, ge=1, le=500)):
+    """Get recent IP-based attack alerts"""
+    alerts = ip_quarantine.get_recent_alerts(limit=limit)
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "total_alerts": len(alerts),
+        "alerts": alerts
+    }
+
+
+@app.post("/api/ip-quarantine/block", tags=["IP Quarantine"])
+async def manually_block_ip(request: IPBlockRequest):
+    """Manually block an IP address"""
+    from .ip_quarantine import BlockAction, IPRequestStats
+    
+    ip = request.ip
+    now = datetime.now(timezone.utc)
+    
+    # Create or get stats for IP
+    if ip not in ip_quarantine.ip_stats:
+        ip_quarantine.ip_stats[ip] = IPRequestStats(
+            ip=ip,
+            first_seen=now,
+            last_seen=now
+        )
+    
+    stats = ip_quarantine.ip_stats[ip]
+    stats.is_blocked = True
+    stats.block_reason = request.reason
+    stats.block_action = BlockAction.BLOCK if request.duration > 0 else BlockAction.PERMANENT
+    stats.block_time = now
+    stats.unblock_time = now + timedelta(seconds=request.duration) if request.duration > 0 else None
+    
+    ip_quarantine.blocked_ips[ip] = stats
+    
+    # Broadcast the block
+    await manager.broadcast({
+        'type': 'ip_blocked',
+        'ip': ip,
+        'reason': request.reason,
+        'duration': request.duration,
+        'timestamp': now.isoformat()
+    })
+    
+    logger.info(f"🛑 Manually blocked IP: {ip} | Reason: {request.reason}")
+    
+    return {
+        "status": "success",
+        "message": f"IP {ip} has been blocked",
+        "blocked_ip": stats.to_dict()
+    }
+
+
+@app.post("/api/ip-quarantine/unblock", tags=["IP Quarantine"])
+async def manually_unblock_ip(request: IPUnblockRequest):
+    """Manually unblock an IP address"""
+    success = ip_quarantine.unblock_ip(request.ip)
+    
+    if success:
+        # Broadcast the unblock
+        await manager.broadcast({
+            'type': 'ip_unblocked',
+            'ip': request.ip,
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+        
+        return {
+            "status": "success",
+            "message": f"IP {request.ip} has been unblocked"
+        }
+    else:
+        return {
+            "status": "not_found",
+            "message": f"IP {request.ip} was not blocked"
+        }
+
+
+@app.delete("/api/ip-quarantine/unblock-all", tags=["IP Quarantine"])
+async def unblock_all_ips():
+    """Unblock all currently blocked IPs (emergency reset)"""
+    blocked_count = len(ip_quarantine.blocked_ips)
+    ip_quarantine.clear_all_blocks()
+    
+    await manager.broadcast({
+        'type': 'all_ips_unblocked',
+        'count': blocked_count,
+        'timestamp': datetime.now(timezone.utc).isoformat()
+    })
+    
+    return {
+        "status": "success",
+        "message": f"Unblocked {blocked_count} IPs"
+    }
+
+
+@app.post("/api/ip-quarantine/whitelist/{ip_address}", tags=["IP Quarantine"])
+async def add_to_whitelist(ip_address: str):
+    """Add an IP to the whitelist (never block)"""
+    ip_quarantine.add_to_whitelist(ip_address)
+    return {
+        "status": "success",
+        "message": f"IP {ip_address} added to whitelist",
+        "whitelist": list(ip_quarantine.whitelist)
+    }
+
+
+@app.delete("/api/ip-quarantine/whitelist/{ip_address}", tags=["IP Quarantine"])
+async def remove_from_whitelist(ip_address: str):
+    """Remove an IP from the whitelist"""
+    ip_quarantine.remove_from_whitelist(ip_address)
+    return {
+        "status": "success",
+        "message": f"IP {ip_address} removed from whitelist",
+        "whitelist": list(ip_quarantine.whitelist)
+    }
+
+
+@app.get("/api/ip-quarantine/whitelist", tags=["IP Quarantine"])
+async def get_whitelist():
+    """Get all whitelisted IPs"""
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "whitelist": list(ip_quarantine.whitelist)
+    }
+
+
+@app.put("/api/ip-quarantine/thresholds", tags=["IP Quarantine"])
+async def update_threshold(request: IPThresholdUpdate):
+    """Update a detection threshold"""
+    if request.threshold_name not in ip_quarantine.thresholds:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown threshold: {request.threshold_name}. Available: {list(ip_quarantine.thresholds.keys())}"
+        )
+    
+    old_value = ip_quarantine.thresholds[request.threshold_name]
+    ip_quarantine.set_threshold(request.threshold_name, request.value)
+    
+    return {
+        "status": "success",
+        "threshold": request.threshold_name,
+        "old_value": old_value,
+        "new_value": request.value
+    }
+
+
+@app.get("/api/ip-quarantine/thresholds", tags=["IP Quarantine"])
+async def get_thresholds():
+    """Get current detection thresholds"""
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "thresholds": ip_quarantine.thresholds,
+        "descriptions": {
+            'requests_per_minute_warn': 'Warning threshold (requests/min)',
+            'requests_per_minute_throttle': 'Throttle threshold (requests/min)',
+            'requests_per_minute_block': 'Block threshold (requests/min)',
+            'endpoint_scan_threshold': 'Unique endpoints in 1 min to trigger scan detection',
+            'failed_requests_threshold': 'Failed requests in 5 min for brute force detection',
+            'burst_requests': 'Requests in burst window to trigger detection',
+            'burst_window': 'Seconds for burst detection window'
+        }
+    }
+
+
+# --- Combined Quarantine Dashboard ---
+
+@app.get("/api/quarantine/dashboard", tags=["Quarantine"])
+async def get_quarantine_dashboard():
+    """Get combined quarantine dashboard with both process and IP quarantine data"""
+    process_status = quarantine_system.get_quarantine_status()
+    ip_stats = ip_quarantine.get_statistics()
+    
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "process_quarantine": {
+            "quarantined_count": len(quarantine_system.quarantined_processes),
+            "killed_count": len(quarantine_system.killed_processes),
+            "status": process_status
+        },
+        "ip_quarantine": {
+            "blocked_count": len(ip_quarantine.blocked_ips),
+            "tracked_ips": len(ip_quarantine.ip_stats),
+            "total_attacks_detected": ip_stats['total_attacks_detected'],
+            "blocked_ips": ip_quarantine.get_blocked_ips()[:10],  # Top 10
+            "recent_alerts": ip_quarantine.get_recent_alerts(limit=10)
+        },
+        "combined_threat_level": _calculate_combined_threat_level(process_status, ip_stats)
+    }
+
+
+def _calculate_combined_threat_level(process_status: Dict, ip_stats: Dict) -> str:
+    """Calculate combined threat level from both quarantine systems"""
+    threat_score = 0
+    
+    # Process-based threats
+    threat_score += len(quarantine_system.quarantined_processes) * 5
+    threat_score += len(quarantine_system.killed_processes) * 3
+    
+    # IP-based threats
+    threat_score += ip_stats.get('currently_blocked', 0) * 4
+    threat_score += ip_stats.get('total_attacks_detected', 0) * 2
+    
+    if threat_score >= 50:
+        return "CRITICAL"
+    elif threat_score >= 30:
+        return "HIGH"
+    elif threat_score >= 15:
+        return "MEDIUM"
+    elif threat_score >= 5:
+        return "LOW"
+    else:
+        return "NORMAL"

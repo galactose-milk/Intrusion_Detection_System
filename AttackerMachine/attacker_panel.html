@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Attacker Console - Login Attack Edition</title>
+
+<style>
+    body {
+        background: #0a0a0a;
+        color: #00ff00;
+        font-family: Consolas, monospace;
+        padding: 20px;
+    }
+
+    h2 { color: #ff4444; }
+    h3 { color: #00bcd4; margin-bottom: 10px; }
+
+    .terminal {
+        border: 1px solid #00ff00;
+        padding: 15px;
+        height: 400px;
+        overflow-y: auto;
+        margin-top: 15px;
+        background: #000;
+    }
+
+    button {
+        background: #1a1a1a;
+        border: 1px solid #00ff00;
+        color: #00ff00;
+        padding: 10px 15px;
+        cursor: pointer;
+        margin-right: 10px;
+        margin-top: 10px;
+        transition: all 0.3s;
+    }
+
+    button:hover {
+        background: #00ff00;
+        color: #000;
+    }
+
+    button.danger {
+        border-color: #ff4444;
+        color: #ff4444;
+    }
+
+    button.danger:hover {
+        background: #ff4444;
+        color: #000;
+    }
+
+    input {
+        background: #1a1a1a;
+        border: 1px solid #00ff00;
+        color: #00ff00;
+        padding: 8px;
+        width: 180px;
+        margin-right: 10px;
+    }
+
+    .section {
+        margin-bottom: 20px;
+        padding: 15px;
+        border: 1px solid #333;
+        border-radius: 5px;
+    }
+
+    .stats {
+        display: flex;
+        gap: 20px;
+        margin-top: 10px;
+    }
+
+    .stat-box {
+        background: #1a1a1a;
+        padding: 10px 15px;
+        border-radius: 5px;
+        border: 1px solid #333;
+    }
+
+    .stat-box span { color: #00bcd4; font-size: 1.2em; }
+
+    .blocked { color: #ff4444 !important; }
+    .success { color: #00ff00 !important; }
+    .warning { color: #ffa500 !important; }
+</style>
+</head>
+
+<body>
+
+<h2>🔥 ATTACKER COMMAND CONSOLE - Login Attack Edition</h2>
+<p>Test your IDS brute force detection and login rate limiting</p>
+
+<div class="section">
+    <label>Target IP:</label>
+    <input id="ip" value="127.0.0.1">
+    <label>Port:</label>
+    <input id="port" value="8000">
+    <button onclick="testConnection()">🔗 Test Connection</button>
+</div>
+
+<div class="section">
+    <h3>🔐 Manual Login Attempt</h3>
+    <input id="username" placeholder="username" value="admin">
+    <input id="password" placeholder="password" type="password" value="wrongpass">
+    <button onclick="manualLogin()">→ Send Login Attempt</button>
+</div>
+
+<div class="section">
+    <h3>🚨 LOGIN BRUTE FORCE ATTACK</h3>
+    <p style="color:#888">Attempts multiple passwords to trigger lockout (5 failed = 15 min lockout)</p>
+    <button class="danger" onclick="startLoginBruteForce()">💀 Start Login Brute Force</button>
+    <button class="danger" onclick="startCredentialStuffing()">👥 Credential Stuffing Attack</button>
+    <button onclick="checkLoginStatus()">📊 Check Login Security Status</button>
+</div>
+
+<div class="section">
+    <h3>🌊 API Flood Attack</h3>
+    <p style="color:#888">Rapid requests to trigger IP-based rate limiting</p>
+    <button onclick="startFlood()">💣 Start Flood Attack</button>
+    <button onclick="startBurstAttack()">⚡ Burst Attack (50 in 10s)</button>
+</div>
+
+<div class="section">
+    <h3>🔍 Endpoint Scan</h3>
+    <button onclick="portScan()">🔍 Scan Endpoints</button>
+</div>
+
+<button onclick="stopAttack()" class="danger" style="width:100%;margin-top:20px;padding:15px;">⛔ STOP ALL ATTACKS</button>
+
+<div class="stats">
+    <div class="stat-box">Requests: <span id="reqCount">0</span></div>
+    <div class="stat-box">Blocked: <span id="blockedCount" class="blocked">0</span></div>
+    <div class="stat-box">Success: <span id="successCount" class="success">0</span></div>
+</div>
+
+<div id="log" class="terminal"></div>
+
+<script>
+let stopFlag = false;
+let stats = { requests: 0, blocked: 0, success: 0 };
+
+function updateStats() {
+    document.getElementById("reqCount").textContent = stats.requests;
+    document.getElementById("blockedCount").textContent = stats.blocked;
+    document.getElementById("successCount").textContent = stats.success;
+}
+
+function log(msg, type = '') {
+    let box = document.getElementById("log");
+    let colorClass = type === 'blocked' ? 'blocked' : type === 'success' ? 'success' : type === 'warning' ? 'warning' : '';
+    box.innerHTML += `<span class="${colorClass}">[${new Date().toLocaleTimeString()}] ${msg}</span><br>`;
+    box.scrollTop = box.scrollHeight;
+}
+
+function getBaseURL() {
+    return `http://${document.getElementById("ip").value}:${document.getElementById("port").value}`;
+}
+
+// ---------------- TEST CONNECTION ----------------
+async function testConnection() {
+    log(`[*] Testing connection to ${getBaseURL()}...`);
+    try {
+        const res = await fetch(getBaseURL() + "/");
+        const data = await res.json();
+        log(`[✓] Connected! Server: ${data.message}`, 'success');
+    } catch(e) {
+        log(`[✗] Connection failed: ${e.message}`, 'blocked');
+    }
+}
+
+// ---------------- MANUAL LOGIN ----------------
+async function manualLogin() {
+    let user = document.getElementById("username").value;
+    let pass = document.getElementById("password").value;
+
+    log(`[*] Sending login: user="${user}" pass="${pass}"`);
+    stats.requests++;
+    updateStats();
+
+    try {
+        const res = await fetch(getBaseURL() + "/api/auth/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username: user, password: pass })
+        });
+
+        const data = await res.json();
+        
+        if (res.status === 429) {
+            log(`[🚨 BLOCKED!] Too many attempts! ${JSON.stringify(data.detail)}`, 'blocked');
+            stats.blocked++;
+        } else if (res.status === 401) {
+            log(`[✗] Login failed: ${JSON.stringify(data.detail)}`, 'warning');
+        } else if (res.ok) {
+            log(`[✓] LOGIN SUCCESS! Token received`, 'success');
+            stats.success++;
+        } else {
+            log(`[?] Response: ${res.status} - ${JSON.stringify(data)}`);
+        }
+    } catch (e) {
+        log(`[ERROR] ${e.message}`, 'blocked');
+    }
+    updateStats();
+}
+
+
+// ---------------- LOGIN BRUTE FORCE ----------------
+async function startLoginBruteForce() {
+    stopFlag = false;
+    stats = { requests: 0, blocked: 0, success: 0 };
+    updateStats();
+    
+    log(`[!!] Starting LOGIN BRUTE FORCE attack...`, 'warning');
+    log(`[*] Targeting user "admin" with common passwords`);
+    log(`[*] IDS should lock after 5 failed attempts`);
+
+    const passwords = [
+        "123456", "password", "admin", "letmein", "welcome",
+        "monkey", "dragon", "master", "qwerty", "admin123",
+        "root", "toor", "pass123", "test", "guest"
+    ];
+
+    for (let pwd of passwords) {
+        if (stopFlag) break;
+
+        stats.requests++;
+        updateStats();
+
+        try {
+            const res = await fetch(getBaseURL() + "/api/auth/login", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ username: "admin", password: pwd })
+            });
+
+            const data = await res.json();
+
+            if (res.status === 429) {
+                stats.blocked++;
+                log(`[🚨 LOCKED OUT!] Password "${pwd}" - ${data.detail?.message || 'IP locked!'}`, 'blocked');
+                log(`[*] Retry after: ${data.detail?.retry_after} seconds`, 'warning');
+                break; // Stop on lockout
+            } else if (res.status === 401) {
+                log(`[✗] Failed: "${pwd}" - Attempts: ${data.detail?.failed_attempts}/${data.detail?.max_attempts}`);
+            } else if (res.ok) {
+                stats.success++;
+                log(`[💀 CRACKED!] Password found: "${pwd}"`, 'success');
+                break;
+            }
+        } catch(e) {
+            log(`[ERROR] ${e.message}`, 'blocked');
+        }
+        
+        updateStats();
+        await new Promise(r=>setTimeout(r, 200)); // Small delay between attempts
+    }
+
+    log(`[+] Brute force finished. Requests: ${stats.requests}, Blocked: ${stats.blocked}`);
+}
+
+
+// ---------------- CREDENTIAL STUFFING ----------------
+async function startCredentialStuffing() {
+    stopFlag = false;
+    stats = { requests: 0, blocked: 0, success: 0 };
+    updateStats();
+    
+    log(`[!!] Starting CREDENTIAL STUFFING attack...`, 'warning');
+    log(`[*] Trying many different usernames (triggers credential stuffing detection)`);
+
+    const credentials = [
+        {user: "admin", pass: "admin123"},
+        {user: "root", pass: "root"},
+        {user: "test", pass: "test123"},
+        {user: "user", pass: "password"},
+        {user: "guest", pass: "guest"},
+        {user: "administrator", pass: "admin"},
+        {user: "support", pass: "support"},
+        {user: "operator", pass: "operator123"},
+        {user: "service", pass: "service"},
+        {user: "backup", pass: "backup123"}
+    ];
+
+    for (let cred of credentials) {
+        if (stopFlag) break;
+
+        stats.requests++;
+        updateStats();
+
+        try {
+            const res = await fetch(getBaseURL() + "/api/auth/login", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ username: cred.user, password: cred.pass })
+            });
+
+            const data = await res.json();
+
+            if (res.status === 429) {
+                stats.blocked++;
+                log(`[🚨 BLOCKED!] Credential stuffing detected! ${cred.user}:${cred.pass}`, 'blocked');
+                break;
+            } else if (res.status === 401) {
+                log(`[✗] ${cred.user}:${cred.pass} - Invalid`);
+            } else if (res.ok) {
+                stats.success++;
+                log(`[💀 FOUND!] ${cred.user}:${cred.pass} WORKS!`, 'success');
+            }
+        } catch(e) {
+            log(`[ERROR] ${e.message}`, 'blocked');
+        }
+        
+        updateStats();
+        await new Promise(r=>setTimeout(r, 150));
+    }
+
+    log(`[+] Credential stuffing finished. Check IDS alerts!`);
+}
+
+
+// ---------------- CHECK LOGIN SECURITY STATUS ----------------
+async function checkLoginStatus() {
+    log(`[*] Checking login security status...`);
+    
+    try {
+        // This endpoint requires auth, so it might fail - that's ok
+        const res = await fetch(getBaseURL() + "/api/login-security/status");
+        if (res.ok) {
+            const data = await res.json();
+            log(`[📊] Login Security Status:`, 'success');
+            log(`    - Tracked IPs: ${data.total_tracked_ips}`);
+            log(`    - Currently Locked: ${data.currently_locked}`);
+            log(`    - Total Lockouts: ${data.total_lockouts}`);
+            log(`    - Blocked Attempts: ${data.total_blocked_attempts}`);
+        } else {
+            log(`[*] Status endpoint requires authentication`, 'warning');
+        }
+    } catch(e) {
+        log(`[*] Could not fetch status: ${e.message}`);
+    }
+}
+
+
+// ---------------- FLOOD ATTACK ----------------
+async function startFlood() {
+    stopFlag = false;
+    stats = { requests: 0, blocked: 0, success: 0 };
+    updateStats();
+    
+    log(`[!!] Starting FLOOD attack - 100 rapid requests...`, 'warning');
+
+    for (let i=0; i<100; i++) {
+        if (stopFlag) break;
+        
+        stats.requests++;
+        
+        try {
+            const res = await fetch(getBaseURL() + "/api/system/status?flood=" + i);
+            
+            if (res.status === 429) {
+                stats.blocked++;
+                if (stats.blocked === 1) {
+                    log(`[🚨 BLOCKED!] Request #${i} - IP rate limited!`, 'blocked');
+                }
+            } else {
+                if (i % 20 === 0) log(`[FLOOD] Sent ${i} packets...`);
+            }
+        } catch(e) {
+            stats.blocked++;
+        }
+        
+        updateStats();
+        await new Promise(r=>setTimeout(r, 10));
+    }
+
+    log(`[+] Flood complete - ${stats.blocked} blocked of ${stats.requests}`, stats.blocked > 0 ? 'success' : 'warning');
+}
+
+
+// ---------------- BURST ATTACK ----------------
+async function startBurstAttack() {
+    stopFlag = false;
+    stats = { requests: 0, blocked: 0, success: 0 };
+    updateStats();
+    
+    log(`[!!] Starting BURST attack - 60 requests in 5 seconds...`, 'warning');
+    log(`[*] This should trigger burst detection (50 req in 10s window)`);
+
+    const promises = [];
+    
+    for (let i=0; i<60; i++) {
+        if (stopFlag) break;
+        
+        stats.requests++;
+        
+        promises.push(
+            fetch(getBaseURL() + "/api/dashboard/stats?burst=" + i)
+                .then(res => {
+                    if (res.status === 429) stats.blocked++;
+                    return res.status;
+                })
+                .catch(() => { stats.blocked++; return 0; })
+        );
+        
+        // Small stagger to prevent browser limits
+        if (i % 10 === 9) {
+            await new Promise(r=>setTimeout(r, 100));
+        }
+    }
+
+    await Promise.all(promises);
+    updateStats();
+    
+    log(`[+] Burst complete - ${stats.blocked} blocked of ${stats.requests}`, stats.blocked > 0 ? 'success' : 'warning');
+}
+
+
+// ---------------- PORT SCAN ----------------
+async function portScan() {
+    stopFlag = false;
+    log(`[!!] Starting endpoint scan...`, 'warning');
+
+    const endpoints = [
+        "/api/system/status", "/api/dashboard/stats", "/api/auth/login",
+        "/api/threats/analyze", "/api/ml/analyze", "/api/detection/alerts",
+        "/admin", "/config", "/.env", "/api/users", "/backup",
+        "/api/ip-quarantine/status", "/api/login-security/status"
+    ];
+
+    for (let endpoint of endpoints) {
+        if (stopFlag) break;
+        
+        stats.requests++;
+        
+        try {
+            const res = await fetch(getBaseURL() + endpoint);
+            if (res.status === 429) {
+                stats.blocked++;
+                log(`[🚨 BLOCKED!] ${endpoint}`, 'blocked');
+            } else {
+                log(`[SCAN] ${endpoint} - ${res.status}`);
+            }
+        } catch(e) {
+            log(`[ERROR] ${endpoint}: ${e.message}`, 'blocked');
+        }
+        
+        updateStats();
+        await new Promise(r=>setTimeout(r, 50));
+    }
+
+    log(`[+] Scan complete - ${stats.blocked} blocked`);
+}
+
+// ---------------- STOP ----------------
+function stopAttack() {
+    stopFlag = true;
+    log(`[⛔] All attacks stopped`, 'warning');
+}
+
+</script>
+</body>
+</html>

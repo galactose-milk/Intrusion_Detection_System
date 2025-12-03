@@ -1,0 +1,29 @@
+{
+  "admin": {
+    "id": "b09a1ea077273327",
+    "username": "admin",
+    "password_hash": "478c10b3c5535a26d362bb9f77911a0a:63d4cdeb42ab05599de1e821373e28dd53742401e99f1422e9dea0912bf3d8b2",
+    "role": "admin",
+    "created_at": "2025-12-03T08:53:21.295414+00:00",
+    "last_login": "2025-12-03T13:00:39.371203+00:00",
+    "is_active": true
+  },
+  "nikita ": {
+    "id": "e27fc7178c5f892d",
+    "username": "nikita ",
+    "password_hash": "1ed4b437dfa1a5c8dd952d648f6548f5:1fde858dc02ac4f6ce69567be39206c3c647bbf2fe74166a763c5b8daf63e512",
+    "role": "viewer",
+    "created_at": "2025-12-03T09:25:59.524291+00:00",
+    "last_login": null,
+    "is_active": true
+  },
+  "sanskar": {
+    "id": "dd27e72e15678581",
+    "username": "sanskar",
+    "password_hash": "ed3f66d78d0bd57cb9925f309cec1b29:b91f7d992a8894d4c5bda8bb0983007daa5fd05708fb4126bd310af689a8f764",
+    "role": "viewer",
+    "created_at": "2025-12-03T09:27:23.014508+00:00",
+    "last_login": "2025-12-03T09:29:03.565061+00:00",
+    "is_active": true
+  }
+}

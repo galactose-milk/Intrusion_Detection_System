@@ -187,6 +187,13 @@ class ProcessQuarantineSystem:
         # Callbacks for alerts
         self.alert_callbacks: List[Callable] = []
         
+        # Additional attributes for API endpoints
+        self.cpu_threshold: float = 70.0
+        self.memory_threshold: float = 70.0
+        self.suspicious_ports: set = {4444, 5555, 6666, 31337, 12345, 54321}  # Common malicious ports
+        self.quarantined_processes: List[Dict[str, Any]] = []
+        self.killed_processes: List[Dict[str, Any]] = []
+        
     def add_rule(self, rule: DetectionRule):
         """Add a custom detection rule"""
         self.rules.append(rule)
@@ -527,6 +534,196 @@ class ProcessQuarantineSystem:
             'detected_threats': len(self.detected_threats),
             'quarantined_count': len(self.quarantined_pids),
             'action_log_size': len(self.action_log)
+        }
+
+    # ==========================================================================
+    # Additional methods for API endpoints
+    # ==========================================================================
+
+    def detect_suspicious_processes(self) -> List[Dict[str, Any]]:
+        """
+        Detect suspicious processes based on resource usage and behavior.
+        Returns a list of suspicious processes with details.
+        """
+        suspicious = []
+        
+        for proc in psutil.process_iter(['pid', 'name', 'username', 'cpu_percent', 
+                                         'memory_percent', 'cmdline']):
+            try:
+                info = proc.info
+                pid = info['pid']
+                name = info['name'] or 'unknown'
+                
+                # Skip our own process and protected processes
+                if pid == os.getpid() or name in self.PROTECTED_PROCESSES:
+                    continue
+                
+                # Get metrics (with fallbacks)
+                cpu_percent = info.get('cpu_percent') or 0
+                memory_percent = info.get('memory_percent') or 0
+                cmdline = ' '.join(info.get('cmdline') or [])[:200]
+                
+                # Get connections separately (might fail due to permissions)
+                try:
+                    connections = proc.net_connections()
+                except (psutil.AccessDenied, psutil.NoSuchProcess):
+                    connections = []
+                
+                reasons = []
+                threat_level = 'LOW'
+                
+                # Check CPU usage
+                if cpu_percent > self.cpu_threshold:
+                    reasons.append(f"High CPU usage: {cpu_percent:.1f}%")
+                    threat_level = 'MEDIUM'
+                    if cpu_percent > 90:
+                        threat_level = 'HIGH'
+                
+                # Check memory usage
+                if memory_percent > self.memory_threshold:
+                    reasons.append(f"High memory usage: {memory_percent:.1f}%")
+                    if threat_level != 'HIGH':
+                        threat_level = 'MEDIUM'
+                
+                # Check for suspicious ports
+                for conn in connections:
+                    try:
+                        local_port = conn.laddr.port if hasattr(conn, 'laddr') and conn.laddr else None
+                        remote_port = conn.raddr.port if hasattr(conn, 'raddr') and conn.raddr else None
+                        
+                        if local_port in self.suspicious_ports or remote_port in self.suspicious_ports:
+                            reasons.append(f"Suspicious port detected: {local_port or remote_port}")
+                            threat_level = 'HIGH'
+                    except:
+                        continue
+                
+                # Check for suspicious command patterns
+                suspicious_patterns = ['miner', 'crypto', 'hack', 'exploit', 'shell', 'nc ', 'netcat']
+                for pattern in suspicious_patterns:
+                    if pattern.lower() in cmdline.lower():
+                        reasons.append(f"Suspicious command pattern: {pattern}")
+                        threat_level = 'CRITICAL'
+                
+                # If any reasons found, add to suspicious list
+                if reasons:
+                    suspicious.append({
+                        'pid': pid,
+                        'name': name,
+                        'username': info.get('username', 'unknown'),
+                        'cpu_percent': round(cpu_percent, 2),
+                        'memory_percent': round(memory_percent, 2),
+                        'cmdline': cmdline,
+                        'threat_level': threat_level,
+                        'reasons': reasons,
+                        'connections': len(connections),
+                        'is_quarantined': pid in self.quarantined_pids
+                    })
+                    
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+        
+        # Sort by threat level
+        threat_order = {'CRITICAL': 0, 'HIGH': 1, 'MEDIUM': 2, 'LOW': 3}
+        suspicious.sort(key=lambda x: threat_order.get(x['threat_level'], 4))
+        
+        return suspicious
+
+    def kill_process(self, pid: int) -> Dict[str, Any]:
+        """Kill a process by PID"""
+        result = {
+            'success': False,
+            'pid': pid,
+            'action': 'kill',
+            'message': ''
+        }
+        
+        try:
+            proc = psutil.Process(pid)
+            proc_name = proc.name()
+            
+            # Safety check
+            if proc_name in self.PROTECTED_PROCESSES:
+                result['message'] = f"Cannot kill protected process: {proc_name}"
+                return result
+            
+            # Kill the process
+            proc.kill()
+            proc.wait(timeout=5)
+            
+            # Record the action
+            self.killed_processes.append({
+                'pid': pid,
+                'name': proc_name,
+                'kill_time': datetime.now(timezone.utc).isoformat(),
+                'reason': 'Manual kill via API'
+            })
+            
+            result['success'] = True
+            result['message'] = f"Process {pid} ({proc_name}) killed successfully"
+            logger.info(f"Process killed: {pid} ({proc_name})")
+            
+        except psutil.NoSuchProcess:
+            result['message'] = f"Process {pid} not found"
+        except psutil.AccessDenied:
+            result['message'] = f"Access denied to kill process {pid} - need elevated privileges"
+        except Exception as e:
+            result['message'] = f"Error killing process: {str(e)}"
+        
+        return result
+
+    def quarantine_process(self, pid: int) -> Dict[str, Any]:
+        """Quarantine (suspend) a process by PID"""
+        result = {
+            'success': False,
+            'pid': pid,
+            'action': 'quarantine',
+            'message': ''
+        }
+        
+        try:
+            proc = psutil.Process(pid)
+            proc_name = proc.name()
+            
+            # Safety check
+            if proc_name in self.PROTECTED_PROCESSES:
+                result['message'] = f"Cannot quarantine protected process: {proc_name}"
+                return result
+            
+            # Suspend the process
+            proc.suspend()
+            self.quarantined_pids.add(pid)
+            
+            # Record the action
+            self.quarantined_processes.append({
+                'pid': pid,
+                'name': proc_name,
+                'quarantine_time': datetime.now(timezone.utc).isoformat(),
+                'reason': 'Manual quarantine via API'
+            })
+            
+            result['success'] = True
+            result['message'] = f"Process {pid} ({proc_name}) quarantined (suspended)"
+            logger.info(f"Process quarantined: {pid} ({proc_name})")
+            
+        except psutil.NoSuchProcess:
+            result['message'] = f"Process {pid} not found"
+        except psutil.AccessDenied:
+            result['message'] = f"Access denied to quarantine process {pid} - need elevated privileges"
+        except Exception as e:
+            result['message'] = f"Error quarantining process: {str(e)}"
+        
+        return result
+
+    def get_quarantine_status(self) -> Dict[str, Any]:
+        """Get status of all quarantine actions"""
+        return {
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'quarantined_count': len(self.quarantined_pids),
+            'killed_count': len(self.killed_processes),
+            'quarantined_processes': list(self.quarantined_processes)[-20:],
+            'killed_processes': list(self.killed_processes)[-20:],
+            'monitoring_active': self.is_monitoring,
+            'auto_response_enabled': self.auto_response_enabled
         }
 
 
