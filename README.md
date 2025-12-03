@@ -2,70 +2,97 @@
 
 🛡️ **ML-Powered Network Security Monitoring & Threat Detection**
 
-This project transforms a basic API monitoring system into a sophisticated **Machine Learning-powered Intrusion Detection System** capable of real-time network traffic analysis, behavioral anomaly detection, and automated threat response.
+A sophisticated **Machine Learning-powered Intrusion Detection System** capable of real-time network traffic analysis using **REAL device data**, behavioral anomaly detection, and automated threat response.
 
 ## 🚀 Features
 
 ### 🤖 Machine Learning & AI
-- **Isolation Forest** anomaly detection for network behavior analysis
-- **Real-time ML inference** on network traffic patterns
+- **NSL-KDD trained models** - Industry-standard intrusion detection dataset
+- **41 real network features** - All features populated from actual device traffic
+- **Multiple ML algorithms tested** - Decision Tree, Random Forest, XGBoost, LightGBM
+- **Real-time ML inference** on live network traffic
 - **Behavioral analysis** to detect unusual user/system activities
-- **Groq API integration** for advanced threat intelligence analysis
-- **Automated model training** with synthetic and real network data
 
 ### 🌐 Network Monitoring
-- **Real-time packet capture** and analysis
-- **Connection monitoring** with protocol detection
-- **Network statistics** and traffic pattern analysis
+- **Real-time packet capture** with Scapy integration
+- **Connection monitoring** using psutil
+- **41 NSL-KDD features** extracted from actual network traffic:
+  - Duration, bytes, protocol type, service, flag
+  - Error rates (serror, rerror, srv_serror, srv_rerror)
+  - Host-based features (dst_host_count, srv_count, same_srv_rate)
+  - Content features (num_failed_logins, num_shells, num_file_creations)
 - **Port scan detection** and suspicious activity identification
-- **System resource monitoring** (CPU, Memory, Disk usage)
 
-### 🔍 Threat Intelligence
-- **IP reputation analysis** with threat scoring
-- **Port activity analysis** for suspicious behavior detection
-- **Multi-layered security alerts** with confidence scoring
-- **Threat correlation** and pattern recognition
-- **Risk assessment** with severity classification (LOW, MEDIUM, HIGH, CRITICAL)
+### 🔐 Security Features
+- **JWT Authentication** with user roles (admin, analyst, viewer)
+- **Login Rate Limiting** - Brute force attack protection
+- **IP Quarantine System** - Auto-block attacking IPs
+- **Login Security Monitoring** - Track failed login attempts per IP
 
 ### 📊 Security Dashboard
-- **Real-time threat visualization** with Chart.js
+- **Real-time threat visualization** 
 - **Interactive security metrics** and KPI monitoring  
-- **Alert management** with filtering and search capabilities
-- **Network topology** and connection analysis
-- **Threat timeline** and incident tracking
+- **Alert management** with filtering and search
+- **Login security view** for monitoring brute force attempts
+- **IP quarantine management** interface
+
+## 📈 ML Model Performance
+
+Tested on NSL-KDD dataset (22,544 test samples):
+
+| Model | Accuracy | Precision | Recall | F1 Score |
+|-------|----------|-----------|--------|----------|
+| **Decision Tree** | 81.22% | 93.72% | **71.83%** | **81.33%** |
+| AdaBoost | 79.87% | 96.61% | 67.00% | 79.12% |
+| XGBoost | 79.56% | 96.71% | 66.34% | 78.70% |
+| Random Forest | 77.94% | 96.71% | 63.40% | 76.59% |
+
+**Decision Tree recommended** - Best recall (catches 72% of attacks) and F1 score.
 
 ## 🏗️ Architecture
 
 ### Backend (FastAPI + Python)
-```
+\`\`\`
 backend/
 ├── app/
-│   ├── main.py              # IDS API endpoints & FastAPI application
-│   ├── ml_models.py         # ML models for anomaly detection
-│   ├── network_monitor.py   # Network traffic monitoring & analysis
-│   └── log_analyzer.py      # Log analysis with Groq API
-├── requirements.txt         # Python dependencies with ML libraries
-└── models/                  # Trained ML model storage
-```
-
-**Key Components:**
-- **AnomalyDetector**: Isolation Forest model for network anomaly detection
-- **ThreatIntelligence**: IP reputation and threat scoring system  
-- **NetworkTrafficMonitor**: Real-time network connection monitoring
-- **SystemResourceMonitor**: System performance and resource analysis
+│   ├── main.py              # FastAPI application & endpoints
+│   ├── ml_models.py         # NSL-KDD trained ML models
+│   ├── network_monitor.py   # Real network traffic monitoring
+│   ├── real_packet_capture.py # Scapy packet capture
+│   ├── auth.py              # JWT authentication
+│   ├── ip_quarantine.py     # IP blocking system
+│   └── attack_detector.py   # Attack pattern detection
+├── models/                  # Trained ML models (.pkl)
+├── requirements.txt         # Python dependencies
+└── compare_models.py        # ML model comparison script
+\`\`\`
 
 ### Frontend (React + Vite)
-```
+\`\`\`
 frontend/
 ├── src/
 │   ├── components/
-│   │   ├── SetupView.jsx      # Network monitoring configuration
-│   │   ├── VisualizerView.jsx # Threat analysis & visualization  
-│   │   └── AlertsView.jsx     # Security alerts & incident management
-│   ├── App.jsx                # Main security dashboard application
-│   └── App.css                # Security-themed UI styling
-└── package.json               # Frontend dependencies with Chart.js
-```
+│   │   ├── MainScreen.jsx       # Dashboard layout
+│   │   ├── RealTimeMonitor.jsx  # Live network monitoring
+│   │   ├── AlertsView.jsx       # Security alerts
+│   │   ├── VisualizerView.jsx   # ML visualization
+│   │   ├── LoginSecurityView.jsx # Login monitoring
+│   │   ├── IPQuarantineView.jsx # IP blocking UI
+│   │   └── LoginPage.jsx        # Authentication
+│   ├── context/
+│   │   └── AuthContext.jsx      # Auth state management
+│   └── App.jsx                  # Main application
+└── package.json
+\`\`\`
+
+### Attacker Machine (Testing)
+\`\`\`
+AttackerMachine/
+├── attacker_panel.html      # Web-based attack launcher
+├── attacker_cli.py          # CLI attack tools
+├── attack_standalone.py     # Standalone attack scripts
+└── NETWORK_ATTACK_GUIDE.md  # Attack testing guide
+\`\`\`
 
 ## 🔧 Installation & Setup
 
@@ -74,152 +101,170 @@ frontend/
 - **Node.js 16+**
 - **Git**
 
-### 1. Clone & Setup
-```bash
-git clone https://github.com/JayGadre/Barclays_Hackthon.git
-cd Barclays_Hackthon
-```
+### 1. Clone Repository
+\`\`\`bash
+git clone https://github.com/galactose-milk/Intrusion_Detection_System.git
+cd Intrusion_Detection_System
+\`\`\`
 
 ### 2. Backend Setup
-```bash
+\`\`\`bash
 cd backend
 
-# Create virtual environment
+# Create virtual environment (optional)
 python -m venv .venv
-.venv\Scripts\activate  # Windows
-# source .venv/bin/activate  # Linux/Mac
+source .venv/bin/activate  # Linux/Mac
+# .venv\Scripts\activate   # Windows
 
-# Install ML dependencies
+# Install dependencies
 pip install -r requirements.txt
 
-# Start IDS backend
-python -m uvicorn app.main:app --reload --port 8000
-```
+# Start backend server
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+\`\`\`
 
 ### 3. Frontend Setup  
-```bash
+\`\`\`bash
 cd frontend
 
 # Install dependencies
 npm install
 
-# Start security dashboard
+# Start development server
 npm run dev
-```
+\`\`\`
 
 ### 4. Access the System
-- **Security Dashboard**: http://localhost:5173
-- **API Documentation**: http://localhost:8000/docs
+- **Dashboard**: http://localhost:5173
+- **API Docs**: http://localhost:8000/docs
 - **Backend Health**: http://localhost:8000
 
-## 🎯 Usage Guide
+### 5. Default Login Credentials
+| Username | Password | Role |
+|----------|----------|------|
+| admin | admin123 | Admin |
+| analyst | analyst123 | Analyst |
+| viewer | viewer123 | Viewer |
 
-### 1. Network Configuration
-- Navigate to **"Network Setup"**
-- Configure network range (e.g., `192.168.1.0/24`)
-- Set monitoring type: Full, Packets Only, Connections Only, or Behavioral
-- Customize ML alert thresholds
+## 🎯 NSL-KDD Features (41 Total)
 
-### 2. Threat Analysis
-- View **"Threat Analysis"** for real-time security visualization
-- Monitor threat severity timeline with interactive charts
-- Analyze network events and suspicious activities  
-- Review ML confidence scores and threat intelligence
+All features are populated with **REAL network data** from your device:
 
-### 3. Security Alerts
-- Access **"Security Alerts"** for incident management
-- Filter alerts by severity: CRITICAL, HIGH, MEDIUM, LOW
-- Search through security events and threat indicators
-- Review detailed threat analysis and ML predictions
+### Basic Features
+| Feature | Source |
+|---------|--------|
+| duration | Connection start time tracking |
+| protocol_type | psutil connection type |
+| service | Port-to-service mapping |
+| flag | Connection status |
+| src_bytes, dst_bytes | Network I/O monitoring |
 
-## 🤖 Machine Learning Models
+### Content Features
+| Feature | Source |
+|---------|--------|
+| wrong_fragment | Scapy IP fragmentation analysis |
+| urgent | Scapy TCP URG flag detection |
+| num_compromised | Payload compromise signatures |
+| num_failed_logins | Login rate limiter |
+| num_shells | Process monitoring |
+| num_file_creations | File system monitoring |
 
-### Isolation Forest Anomaly Detection
-- **Purpose**: Detect unusual network traffic patterns
-- **Features**: Packet size, connection duration, protocol types, port activity
-- **Training**: Synthetic network data + real traffic patterns
-- **Output**: Anomaly score, confidence level, threat classification
+### Traffic Features
+| Feature | Source |
+|---------|--------|
+| count | Connection history window |
+| srv_count | Service access tracking |
+| serror_rate | SYN error tracking |
+| same_srv_rate | Service pattern analysis |
 
-### Threat Intelligence Scoring
-- **IP Reputation**: Known malicious IP database
-- **Port Analysis**: Suspicious port activity detection  
-- **Behavioral Patterns**: User and system behavior analysis
-- **Risk Assessment**: Multi-factor threat scoring (0-10 scale)
+### Host-based Features
+| Feature | Source |
+|---------|--------|
+| dst_host_count | Destination host tracking |
+| dst_host_same_src_port_rate | Source port pattern analysis |
+| srv_diff_host_rate | Multi-host service tracking |
 
-## 📈 Key Metrics & Alerts
+## 🔒 Security Endpoints
 
-### Network Security Metrics
-- **Network Events**: Total network connections and packet analysis
-- **Suspicious Activities**: ML-flagged anomalous behavior
-- **Threat Scores**: Risk assessment based on multiple factors
-- **Alert Severity**: Categorized threat levels with automated response
+### Authentication
+- \`POST /api/auth/login\` - User login
+- \`POST /api/auth/register\` - Register new user (admin only)
+- \`GET /api/auth/me\` - Current user info
 
-### Performance Monitoring  
-- **Real-time Processing**: Sub-second threat detection
-- **ML Model Accuracy**: Continuous model performance tracking
-- **System Resources**: CPU, memory, and network utilization
-- **Threat Response Time**: Average incident detection and alerting speed
+### Detection
+- \`GET /api/detection/alerts\` - Security alerts
+- \`GET /api/detection/statistics\` - Detection stats
+- \`GET /api/realtime/connections\` - Live connections
 
-## 🔒 Security Features
+### IP Quarantine
+- \`GET /api/quarantine/blocked\` - Blocked IPs
+- \`POST /api/quarantine/block\` - Block an IP
+- \`DELETE /api/quarantine/unblock/{ip}\` - Unblock IP
 
-- **Real-time Network Monitoring**: Continuous traffic analysis  
-- **ML-powered Anomaly Detection**: Behavioral pattern recognition
-- **Threat Intelligence Integration**: IP reputation and threat databases
-- **Automated Alert System**: Instant notifications for security incidents
-- **Multi-layered Analysis**: Network, system, and behavioral monitoring
-- **Scalable Architecture**: Designed for enterprise deployment
+### Login Security
+- \`GET /api/auth/login-stats\` - Login attempt statistics
+- \`GET /api/auth/locked-ips\` - Locked out IPs
 
-## 🚦 API Endpoints
+## 🧪 Testing Attacks
 
-### Network Setup
-- `POST /api/network/setup` - Configure network monitoring
-- `GET /api/dashboard/stats` - Security dashboard statistics
+Use the Attacker Machine tools to test detection:
 
-### Threat Analysis
-- `GET /api/threats/analyze` - Comprehensive threat analysis
-- `POST /api/ml/analyze` - ML-powered network data analysis
+\`\`\`bash
+cd AttackerMachine
 
-### System Health
-- `GET /` - IDS system status and health check
+# Web panel
+open attacker_panel.html
 
-## 🌟 Advanced Features
+# CLI attacks
+python attacker_cli.py --target http://localhost:8000
+\`\`\`
 
-### Machine Learning Pipeline
-- **Data Preprocessing**: Network traffic feature extraction
-- **Model Training**: Automated retraining with new threat patterns  
-- **Inference Engine**: Real-time ML predictions on network data
-- **Model Persistence**: Trained model storage and versioning
+Available attacks:
+- Port scanning
+- Brute force login
+- DDoS simulation
+- SQL injection attempts
+- API endpoint probing
 
-### Threat Intelligence
-- **IP Geolocation**: Geographic threat analysis
-- **Reputation Databases**: Known malicious IP and domain lists
-- **Behavioral Analytics**: User and entity behavior analysis (UEBA)
-- **Threat Hunting**: Proactive security threat discovery
+## 📊 ML Model Comparison
 
-## 📊 Visualization & Reporting
+Run the comparison script:
+\`\`\`bash
+cd backend
+python compare_models.py
+\`\`\`
 
-- **Interactive Charts**: Real-time threat timeline visualization
-- **Security Metrics**: KPI dashboards with threat indicators
-- **Alert Management**: Incident response and case management
-- **Threat Maps**: Geographic and network topology visualization
-- **Compliance Reporting**: Security audit and compliance metrics
+This tests 10+ models on NSL-KDD and outputs:
+- Accuracy, Precision, Recall, F1 scores
+- Training time comparison
+- Feature importance analysis
 
-## 🔧 Customization & Configuration
+## 📁 Project Structure
 
-### ML Model Tuning
-- Adjust anomaly detection thresholds
-- Configure threat scoring parameters
-- Customize alert sensitivity levels
-- Train models with organization-specific data
+\`\`\`
+Intrusion_detection_system/
+├── backend/           # FastAPI backend
+├── frontend/          # React frontend
+├── NSL-KDD/           # Training dataset
+├── AttackerMachine/   # Attack testing tools
+├── ML_MODEL_COMPARISON.md  # Model benchmark results
+└── README.md
+\`\`\`
 
-### Network Monitoring
-- Define network segments and monitoring zones  
-- Configure protocol analysis and deep packet inspection
-- Set up custom alerting rules and response actions
-- Integrate with existing SIEM and security tools
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create feature branch (\`git checkout -b feature/amazing-feature\`)
+3. Commit changes (\`git commit -m 'Add amazing feature'\`)
+4. Push to branch (\`git push origin feature/amazing-feature\`)
+5. Open a Pull Request
+
+## 📝 License
+
+This project is for educational purposes.
 
 ---
 
-**🛡️ Transform your network security with intelligent, ML-powered threat detection!**
+**🛡️ Real ML-powered intrusion detection with actual network data!**
 
 For questions or support, please open an issue in the GitHub repository.
